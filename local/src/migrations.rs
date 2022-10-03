@@ -17,9 +17,17 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
 }
 
 mod tests {
+    use super::*;
+
     #[test]
     fn migrations_valid() {
-        let migrations = super::create_migrations();
+        let migrations = create_migrations();
         migrations.validate().unwrap();
+    }
+
+    #[test]
+    fn migrations_work() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
     }
 }
