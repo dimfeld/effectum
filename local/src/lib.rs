@@ -1,4 +1,7 @@
-pub mod migrations;
+mod error;
+mod migrations;
+
+pub use error::{Error, Result};
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right
