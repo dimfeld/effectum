@@ -16,6 +16,7 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 
