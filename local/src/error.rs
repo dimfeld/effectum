@@ -6,4 +6,8 @@ pub enum Error {
     Migration(#[from] rusqlite_migration::Error),
     #[error("Error opening database: {0}")]
     OpenDatabase(rusqlite::Error),
+    #[error("Database error: {0}")]
+    Database(#[from] rusqlite::Error),
+    #[error("Internal error: {0}")]
+    Panic(#[from] tokio::task::JoinError),
 }

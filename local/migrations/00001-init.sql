@@ -3,14 +3,16 @@ CREATE TABLE active_jobs (
   external_id blob not null,
   job_type text not null,
   priority int not null default 0,
-  from_recurring_job int references recurring_jobs(recurring_job_id),
+  from_recurring_job int,
   orig_run_at_time bigint not null,
   payload blob,
   max_retries int not null,
-  backoff text not null,
+  backoff_multiplier real not null,
+  backoff_randomization real not null,
+  backoff_initial_interval int not null,
   added_at bigint not null,
   default_timeout int not null,
-  heartbeat_expiration_increment int not null,
+  heartbeat_increment int not null,
   run_info text
 );
 
@@ -27,10 +29,12 @@ CREATE TABLE done_jobs (
   orig_run_at_time bigint not null,
   payload blob,
   max_retries int not null,
-  backoff text not null,
+  backoff_multiplier real not null,
+  backoff_randomization real not null,
+  backoff_initial_interval int not null,
   added_at bigint not null,
   default_timeout int not null,
-  heartbeat_expiration_increment int not null,
+  heartbeat_increment int not null,
   run_info text
 );
 

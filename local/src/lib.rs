@@ -9,19 +9,38 @@ mod update_job;
 use std::sync::Arc;
 
 pub use error::{Error, Result};
-use job_loop::{wait_for_pending_jobs, WaitingWorkers};
+use job_loop::{run_jobs_task, WaitingWorkers};
 use rusqlite::Connection;
 use shared_state::{SharedState, SharedStateData};
+use time::Duration;
 use tokio::sync::Mutex;
+
+pub struct Retries {
+    pub max_retries: u32,
+    pub backoff_multiplier: f32,
+    pub backoff_randomization: f32,
+    pub backoff_initial_interval: Duration,
+}
+
+impl Default for Retries {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            backoff_multiplier: 2f32,
+            backoff_randomization: 0.2,
+            backoff_initial_interval: Duration::seconds(20),
+        }
+    }
+}
 
 pub struct NewJob {
     job_type: String,
-    run_at: time::OffsetDateTime,
+    priority: Option<i64>,
+    run_at: Option<time::OffsetDateTime>,
     payload: Vec<u8>,
-    num_retries_allowed: u32,
-    backoff: backoff::ExponentialBackoff,
+    retries: Retries,
     timeout: time::Duration,
-    heartbeat_expiration_increment: time::Duration,
+    heartbeat_increment: time::Duration,
 }
 
 struct Queue {
@@ -37,14 +56,16 @@ impl Queue {
     /// Note that if you use an existing database file, this queue will set the journal style to
     /// WAL mode.
     pub fn new(file: &str) -> Result<Queue> {
-        let conn = Connection::open(file).map_err(Error::OpenDatabase)?;
+        let mut conn = Connection::open(file).map_err(Error::OpenDatabase)?;
         conn.pragma_update(None, "journal", "wal")
             .map_err(Error::OpenDatabase)?;
+
+        crate::migrations::migrate(&mut conn)?;
 
         let (close_tx, close_rx) = tokio::sync::watch::channel(());
 
         let shared_state = Arc::new(SharedStateData {
-            conn: Mutex::new(conn),
+            db: std::sync::Mutex::new(conn),
             waiting_workers: Mutex::new(WaitingWorkers {}),
             notify_updated: tokio::sync::Notify::new(),
             close: close_rx,
@@ -55,7 +76,7 @@ impl Queue {
             state: shared_state.clone(),
         };
 
-        tokio::task::spawn(wait_for_pending_jobs(shared_state));
+        tokio::task::spawn(run_jobs_task(shared_state));
         Ok(q)
     }
 }

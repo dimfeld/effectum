@@ -14,11 +14,9 @@ rusqlite_migration = "1.0.0"
 smartstring = "1.0.1"
 thiserror = "1.0.37"
 time = "0.3.14"
-tokio = { version = "1.21.2", features = ["macros", "time", "sync"] }
-uuid = "1.1.2"
-
-[dev-dependencies]
 tokio = { version = "1.21.2", features = ["rt", "macros", "time", "sync"] }
+ulid = { version = "1.0.0", features = ["uuid"] }
+uuid = "1.1.2"
 
 [features]
 default = ["bundled-sqlite"]
