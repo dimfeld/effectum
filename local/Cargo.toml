@@ -7,16 +7,23 @@ edition = "2021"
 
 [dependencies]
 backoff = "0.4.0"
+deadpool-sqlite = "0.5.0"
 futures = "0.3.24"
 once_cell = "1.15.0"
 rusqlite = { version = "0.28.0", features = ["modern-full", "time", "blob"] }
 rusqlite_migration = "1.0.0"
+serde = { version = "1.0.145", features = ["derive"] }
+serde_json = "1.0.85"
 smartstring = "1.0.1"
 thiserror = "1.0.37"
-time = "0.3.14"
+time = { version = "0.3.14", features = ["serde"] }
 tokio = { version = "1.21.2", features = ["rt", "macros", "time", "sync"] }
 ulid = { version = "1.0.0", features = ["uuid"] }
 uuid = "1.1.2"
+
+[dev-dependencies]
+temp-dir = "0.1.11"
+tokio = { version = "1.21.2", features = ["rt", "macros", "time", "sync", "test-util"] }
 
 [features]
 default = ["bundled-sqlite"]

@@ -51,7 +51,7 @@ CREATE TABLE pending (
   checkpointed_payload blob
 );
 
-CREATE INDEX pending_run_at ON pending(run_at, priority desc);
+CREATE INDEX pending_run_at ON pending(priority desc, run_at);
 
 CREATE TABLE running (
   job_id INTEGER PRIMARY KEY,

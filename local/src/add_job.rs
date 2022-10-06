@@ -22,7 +22,7 @@ pub(crate) const ADD_PENDING_JOB_QUERY: &str = r##"
 "##;
 
 impl Queue {
-    async fn add_job(
+    pub async fn add_job(
         &self,
         recurring_job_id: Option<i64>,
         job_config: NewJob,
@@ -86,11 +86,11 @@ impl Queue {
 mod tests {
     use time::{Duration, OffsetDateTime};
 
-    use crate::NewJob;
+    use crate::{test_util::create_test_queue, NewJob};
 
     #[tokio::test]
     async fn add_job() {
-        let queue = crate::Queue::new(":memory:").unwrap();
+        let queue = create_test_queue();
 
         let job = NewJob {
             job_type: "a_job".to_string(),
@@ -102,6 +102,12 @@ mod tests {
             heartbeat_increment: Duration::seconds(30),
         };
 
-        queue.add_job(None, job).await.unwrap();
+        let (_, external_id) = queue.add_job(None, job).await.unwrap();
+        let after_start_time = OffsetDateTime::now_utc();
+        let status = queue.get_job_status(external_id).await.unwrap();
+
+        assert_eq!(status.status, "active");
+        assert_eq!(status.id, external_id);
+        assert!(status.orig_run_at_time < after_start_time);
     }
 }

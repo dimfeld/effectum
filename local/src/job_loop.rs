@@ -9,7 +9,7 @@ pub(crate) struct WaitingWorkers {}
 
 async fn run_ready_jobs(state: SharedState) -> Result<i64> {
     // Get the task types which have waiting workers.
-    // Get ready jobs from the database for those task types, ordered by priority.
+    // Get ready jobs from the database for those task types.
     // Send the jobs to workers, as available.
     // Once everything is done, return the time of the next job.
     // If we ran out of workers and there are still pending jobs, return the types of those jobs so
@@ -39,4 +39,18 @@ pub(crate) async fn run_jobs_task(state: SharedState) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Queue;
+
+    #[tokio::test]
+    pub async fn run_job() {}
+
+    #[tokio::test]
+    pub async fn run_job_in_future() {}
+
+    #[tokio::test]
+    pub async fn run_jobs_with_priority() {}
 }
