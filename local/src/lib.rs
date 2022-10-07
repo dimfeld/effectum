@@ -7,8 +7,10 @@ mod migrations;
 mod shared_state;
 mod update_job;
 
+pub mod job;
 #[cfg(test)]
 mod test_util;
+pub mod worker;
 
 use std::{path::Path, sync::Arc};
 
@@ -59,9 +61,7 @@ pub struct Queue {
 }
 
 impl Queue {
-    /// Create a new Queue at the given file path. This is a normal SQLite database connection
-    /// string, so you can use `:memory:` to create an in-memory queue, with the normal caveats
-    /// about lack of persistence.
+    /// Open or create a new Queue database at the given path.
     ///
     /// Note that if you use an existing database file, this queue will set the journal style to
     /// WAL mode.
@@ -77,14 +77,14 @@ impl Queue {
         let pool_cfg = deadpool_sqlite::Config::new(file);
         let read_conn_pool = pool_cfg.create_pool(deadpool_sqlite::Runtime::Tokio1)?;
 
-        let shared_state = Arc::new(SharedStateData {
+        let shared_state = SharedState(Arc::new(SharedStateData {
             db: std::sync::Mutex::new(conn),
             read_conn_pool,
             waiting_workers: Mutex::new(WaitingWorkers {}),
             notify_updated: tokio::sync::Notify::new(),
             notify_workers_done: tokio::sync::Notify::new(),
             close: close_rx,
-        });
+        }));
 
         let run_jobs_task = tokio::task::spawn(run_jobs_task(shared_state.clone()));
 

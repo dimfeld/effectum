@@ -1,8 +1,10 @@
+use std::ops::Deref;
 use std::sync::Arc;
 
 use rusqlite::Connection;
 
 use crate::job_loop::WaitingWorkers;
+use crate::Result;
 
 pub(crate) struct SharedStateData {
     pub db: std::sync::Mutex<Connection>,
@@ -14,4 +16,30 @@ pub(crate) struct SharedStateData {
     pub close: tokio::sync::watch::Receiver<()>,
 }
 
-pub(crate) type SharedState = Arc<SharedStateData>;
+#[derive(Clone)]
+pub(crate) struct SharedState(pub Arc<SharedStateData>);
+
+impl Deref for SharedState {
+    type Target = Arc<SharedStateData>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl SharedState {
+    pub(crate) async fn write_db<F, T>(&self, f: F) -> Result<T>
+    where
+        F: (FnOnce(&mut Connection) -> Result<T>) + Send + 'static,
+        T: Send + 'static,
+    {
+        let state = self.0.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut db = state.db.lock().unwrap();
+            f(&mut db)
+        })
+        .await??;
+
+        Ok(result)
+    }
+}

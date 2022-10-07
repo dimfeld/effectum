@@ -22,8 +22,12 @@ pub enum Error {
     NotFound,
     #[error("Error decoding job run info {0}")]
     InvalidJobRunInfo(serde_json::Error),
+    #[error("Error processing payload: {0}")]
+    PayloadError(serde_json::Error),
     #[error("Timestamp {0} out of range")]
     TimestampOutOfRange(&'static str),
     #[error("Timed out")]
     Timeout,
+    #[error("Job expired")]
+    Expired,
 }

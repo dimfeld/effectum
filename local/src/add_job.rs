@@ -29,9 +29,7 @@ impl Queue {
     ) -> Result<(i64, Uuid)> {
         let external_id: Uuid = ulid::Ulid::new().into();
 
-        let state = self.state.clone();
-        let task_id = tokio::task::spawn_blocking(move || {
-            let mut db = state.db.lock().unwrap();
+        let task_id = self.state.write_db(move |db| {
             let tx = db.transaction()?;
 
             let priority = job_config.priority.unwrap_or(0);
@@ -74,7 +72,7 @@ impl Queue {
 
             Ok::<_, Error>(task_id)
         })
-        .await??;
+        .await?;
 
         self.state.notify_updated.notify_one();
 
@@ -108,6 +106,34 @@ mod tests {
 
         assert_eq!(status.status, "active");
         assert_eq!(status.id, external_id);
+        assert_eq!(status.priority, 1);
         assert!(status.orig_run_at_time < after_start_time);
+    }
+
+    #[tokio::test]
+    async fn add_job_at_time() {
+        let queue = create_test_queue();
+
+        let job_time = (OffsetDateTime::now_utc() + time::Duration::minutes(10))
+            .replace_nanosecond(0)
+            .unwrap();
+
+        let job = NewJob {
+            job_type: "a_job".to_string(),
+            priority: None,
+            run_at: Some(job_time),
+            payload: Vec::new(),
+            retries: crate::Retries::default(),
+            timeout: Duration::minutes(5),
+            heartbeat_increment: Duration::seconds(30),
+        };
+
+        let (_, external_id) = queue.add_job(None, job).await.unwrap();
+        let status = queue.get_job_status(external_id).await.unwrap();
+
+        assert_eq!(status.orig_run_at_time, job_time);
+        assert_eq!(status.status, "active");
+        assert_eq!(status.id, external_id);
+        assert_eq!(status.priority, 0);
     }
 }

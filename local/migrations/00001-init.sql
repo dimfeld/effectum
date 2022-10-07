@@ -55,6 +55,7 @@ CREATE INDEX pending_run_at ON pending(priority desc, run_at);
 
 CREATE TABLE running (
   job_id INTEGER PRIMARY KEY,
+  worker_id int not null,
   last_heartbeat bigint,
   started_at bigint not null,
   expires_at bigint not null,
