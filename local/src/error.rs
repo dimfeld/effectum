@@ -30,4 +30,6 @@ pub enum Error {
     Timeout,
     #[error("Job expired")]
     Expired,
+    #[error("Worker {0} not found")]
+    WorkerNotFound(u64),
 }

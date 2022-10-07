@@ -21,6 +21,8 @@ use shared_state::{SharedState, SharedStateData};
 use time::Duration;
 use tokio::{sync::Mutex, task::JoinHandle, time::error::Elapsed};
 
+pub(crate) type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
+
 pub struct Retries {
     pub max_retries: u32,
     pub backoff_multiplier: f32,
