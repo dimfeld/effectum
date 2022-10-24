@@ -1,4 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::value::RawValue;
+use smallvec::SmallVec;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -6,13 +8,13 @@ use crate::{Error, Queue, Result};
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "status")]
-pub struct RunInfo {
-    sucess: bool,
+pub struct RunInfo<T: Send> {
+    success: bool,
     #[serde(with = "time::serde::timestamp")]
     start: OffsetDateTime,
     #[serde(with = "time::serde::timestamp")]
     end: OffsetDateTime,
-    info: serde_json::Value,
+    info: T,
 }
 
 pub struct JobStatus {
@@ -29,7 +31,7 @@ pub struct JobStatus {
     pub added_at: OffsetDateTime,
     pub default_timeout: Duration,
     pub heartbeat_increment: Duration,
-    pub run_info: Vec<RunInfo>,
+    pub run_info: SmallVec<[RunInfo<Box<RawValue>>; 4]>,
 }
 
 impl Queue {
@@ -59,11 +61,11 @@ impl Queue {
 
                 let mut rows = stmt.query_and_then([external_id], |row| {
                     let blob = row.get_ref(12)?.as_blob_or_null()?;
-                    let run_info: Vec<RunInfo> = match blob {
+                    let run_info: SmallVec<[RunInfo<Box<RawValue>>; 4]> = match blob {
                         Some(blob) => {
                             serde_json::from_slice(blob).map_err(Error::InvalidJobRunInfo)?
                         }
-                        None => Vec::new(),
+                        None => SmallVec::new(),
                     };
 
                     let status = JobStatus {

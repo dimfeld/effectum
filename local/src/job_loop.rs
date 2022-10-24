@@ -20,7 +20,7 @@ pub(crate) struct Workers {
 }
 
 impl Workers {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Workers {
             next_id: 0,
             waiting_by_type: HashMap::default(),
@@ -48,6 +48,8 @@ impl Workers {
                 job_types,
             },
         );
+
+        // TODO notify here?
 
         worker_id
     }

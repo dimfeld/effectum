@@ -8,6 +8,8 @@ mod shared_state;
 mod update_job;
 
 pub mod job;
+pub mod job_registry;
+mod sqlite_functions;
 #[cfg(test)]
 mod test_util;
 pub mod worker;
@@ -15,9 +17,10 @@ pub mod worker;
 use std::{path::Path, sync::Arc};
 
 pub use error::{Error, Result};
-use job_loop::{run_jobs_task, WaitingWorkers};
+use job_loop::{run_jobs_task, Workers};
 use rusqlite::Connection;
 use shared_state::{SharedState, SharedStateData};
+use sqlite_functions::register_functions;
 use time::Duration;
 use tokio::{sync::Mutex, task::JoinHandle, time::error::Elapsed};
 
@@ -74,6 +77,8 @@ impl Queue {
 
         crate::migrations::migrate(&mut conn)?;
 
+        register_functions(&mut conn)?;
+
         let (close_tx, close_rx) = tokio::sync::watch::channel(());
 
         let pool_cfg = deadpool_sqlite::Config::new(file);
@@ -82,7 +87,7 @@ impl Queue {
         let shared_state = SharedState(Arc::new(SharedStateData {
             db: std::sync::Mutex::new(conn),
             read_conn_pool,
-            waiting_workers: Mutex::new(WaitingWorkers {}),
+            workers: Mutex::new(Workers::new()),
             notify_updated: tokio::sync::Notify::new(),
             notify_workers_done: tokio::sync::Notify::new(),
             close: close_rx,

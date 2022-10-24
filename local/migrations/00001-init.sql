@@ -25,7 +25,7 @@ CREATE TABLE done_jobs (
   priority int not null default 0,
   status text not null,
   done_time bigint not null,
-  from_recurring_job int references recurring_jobs(recurring_job_id),
+  from_recurring_job int,
   orig_run_at_time bigint not null,
   payload blob,
   max_retries int not null,
