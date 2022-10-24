@@ -84,14 +84,19 @@ impl Queue {
         let pool_cfg = deadpool_sqlite::Config::new(file);
         let read_conn_pool = pool_cfg.create_pool(deadpool_sqlite::Runtime::Tokio1)?;
 
+        let notify_updated = Arc::new(tokio::sync::Notify::new());
         let shared_state = SharedState(Arc::new(SharedStateData {
             db: std::sync::Mutex::new(conn),
             read_conn_pool,
-            workers: Mutex::new(Workers::new()),
-            notify_updated: tokio::sync::Notify::new(),
+            workers: Mutex::new(Workers::new(notify_updated.clone())),
+            notify_updated,
             notify_workers_done: tokio::sync::Notify::new(),
             close: close_rx,
         }));
+
+        // TODO Optionally clean up running jobs here, treating them all as failures and scheduling
+        // for retry. For later server mode, we probably want to do something more intelligent so
+        // that we can continue to receive "job finished" notifications.
 
         let run_jobs_task = tokio::task::spawn(run_jobs_task(shared_state.clone()));
 

@@ -11,7 +11,7 @@ pub(crate) struct SharedStateData {
     /// Separate pool for miscellaneous read-only calls so they won't block the writes.
     pub read_conn_pool: deadpool_sqlite::Pool,
     pub workers: tokio::sync::Mutex<Workers>,
-    pub notify_updated: tokio::sync::Notify,
+    pub notify_updated: Arc<tokio::sync::Notify>,
     pub notify_workers_done: tokio::sync::Notify,
     pub close: tokio::sync::watch::Receiver<()>,
 }

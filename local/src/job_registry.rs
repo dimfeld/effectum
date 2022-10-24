@@ -45,7 +45,7 @@ where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
     pub name: SmartString,
-    pub weight: usize,
+    pub weight: u16,
     pub runner: JobFn<CONTEXT>,
 }
 
@@ -53,19 +53,19 @@ impl<CONTEXT> JobDef<CONTEXT>
 where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
-    pub const fn new<F, Fut, T, E>(
+    pub fn new<F, Fut, T, E>(
         name: impl Into<SmartString>,
         runner: F,
-        weight: usize,
+        weight: u16,
     ) -> JobDef<CONTEXT>
     where
-        F: Fn(&mut Job, CONTEXT) -> Fut + Send + Sync + Clone,
+        F: Fn(&mut Job, CONTEXT) -> Fut + Send + Sync + Clone + 'static,
         CONTEXT: Send + Debug + Clone + 'static,
         Fut: Future<Output = Result<T, E>> + Send + Sync,
         T: Send + Sync + Serialize + 'static,
         E: Send + Display + 'static,
     {
-        let f = |job: Job, context: CONTEXT| {
+        let f = move |mut job: Job, context: CONTEXT| {
             let runner = runner.clone();
             tokio::spawn(async move {
                 let result = runner(&mut job, context).await;

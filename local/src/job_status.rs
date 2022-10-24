@@ -9,12 +9,12 @@ use crate::{Error, Queue, Result};
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "status")]
 pub struct RunInfo<T: Send> {
-    success: bool,
+    pub success: bool,
     #[serde(with = "time::serde::timestamp")]
-    start: OffsetDateTime,
+    pub start: OffsetDateTime,
     #[serde(with = "time::serde::timestamp")]
-    end: OffsetDateTime,
-    info: T,
+    pub end: OffsetDateTime,
+    pub info: T,
 }
 
 pub struct JobStatus {

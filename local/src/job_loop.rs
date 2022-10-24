@@ -1,106 +1,69 @@
+use std::sync::{atomic::AtomicU32, Arc};
+
 use ahash::{HashMap, HashSet};
 use tokio::{
     select,
+    sync::{broadcast, Notify},
     time::{Duration, Instant},
 };
 
 use crate::SmartString;
 use crate::{shared_state::SharedState, Error, NewJob, Queue, Result};
 
-struct ListeningWorker {
-    job_types: Vec<SmartString>,
-    running: bool,
+pub(crate) struct ListeningWorker {
+    pub id: u64,
+    pub notify_task_ready: Notify,
+    pub job_types: Vec<SmartString>,
 }
 
 pub(crate) struct Workers {
     next_id: u64,
-    waiting_by_type: HashMap<SmartString, Vec<u64>>,
-    workers: HashMap<u64, ListeningWorker>,
-    running_workers: HashSet<u64>,
+    job_type_notifiers: HashMap<SmartString, broadcast::Sender<()>>,
+    workers: HashMap<u64, Arc<ListeningWorker>>,
+    workers_by_type: HashMap<SmartString, Vec<Arc<ListeningWorker>>>,
 }
 
 impl Workers {
-    pub fn new() -> Self {
+    pub fn new(notify_updated: Arc<tokio::sync::Notify>) -> Self {
         Workers {
             next_id: 0,
-            waiting_by_type: HashMap::default(),
+            job_type_notifiers: HashMap::default(),
             workers: HashMap::default(),
-            running_workers: HashSet::default(),
+            workers_by_type: HashMap::default(),
         }
     }
 
     /// Add a new worker, ready to accept jobs.
-    pub(crate) fn add_worker(&mut self, job_types: Vec<SmartString>) -> u64 {
+    pub(crate) fn add_worker(&mut self, job_types: &[SmartString]) -> Arc<ListeningWorker> {
         let worker_id = self.next_id;
         self.next_id += 1;
 
-        for job_type in &job_types {
-            self.waiting_by_type
-                .entry(job_type.clone())
-                .and_modify(|ids| ids.push(worker_id))
-                .or_insert_with(|| vec![worker_id]);
+        let worker = Arc::new(ListeningWorker {
+            id: worker_id,
+            notify_task_ready: Notify::new(),
+            job_types: job_types.to_vec(),
+        });
+
+        for job in job_types {
+            self.workers_by_type
+                .entry(job.clone())
+                .or_default()
+                .push(worker.clone());
         }
 
-        self.workers.insert(
-            worker_id,
-            ListeningWorker {
-                running: false,
-                job_types,
-            },
-        );
+        self.workers.insert(worker.id, worker.clone());
 
-        // TODO notify here?
-
-        worker_id
+        worker
     }
 
-    pub(crate) fn set_worker_waiting(&mut self, worker_id: u64) -> Result<usize> {
+    pub(crate) fn remove_worker(&mut self, worker_id: u64) -> Result<()> {
+        // This will likely do something in the future; it just doesn't yet.
         let worker = self
             .workers
-            .get_mut(&worker_id)
+            .remove(&worker_id)
             .ok_or(Error::WorkerNotFound(worker_id))?;
-        self.running_workers.remove(&worker_id);
-        for job_type in &worker.job_types {
-            if let Some(ids) = self.waiting_by_type.get_mut(job_type) {
-                ids.push(worker_id);
-            }
-        }
 
-        Ok(self.running_workers.len())
-    }
-
-    pub(crate) fn set_worker_running(&mut self, worker_id: u64) -> Result<usize> {
-        let worker = self
-            .workers
-            .get_mut(&worker_id)
-            .ok_or(Error::WorkerNotFound(worker_id))?;
-        self.remove_waiting_worker(&worker.job_types, worker_id);
-        self.running_workers.insert(worker_id);
-
-        Ok(self.running_workers.len())
-    }
-
-    pub(crate) fn remove_worker(&mut self, worker_id: u64) -> Result<usize> {
-        let worker = match self.workers.remove(&worker_id) {
-            Some(w) => w,
-            None => return Err(Error::WorkerNotFound(worker_id)),
-        };
-
-        self.running_workers.remove(&worker_id);
-        self.remove_waiting_worker(&worker.job_types, worker_id);
-
-        Ok(self.running_workers.len())
-    }
-
-    fn remove_waiting_worker(&mut self, job_types: &[SmartString], worker_id: u64) {
-        for job_type in job_types {
-            if let Some(ids) = self.waiting_by_type.get_mut(job_type) {
-                let pos = ids.iter().position(|id| *id == worker_id);
-                if let Some(pos) = pos {
-                    ids.remove(pos);
-                }
-            }
-        }
+        Ok(())
     }
 }
 
