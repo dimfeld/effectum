@@ -203,6 +203,7 @@ where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
     async fn run(self, mut close_rx: oneshot::Receiver<()>) {
+        let mut global_close_rx = self.queue.close.clone();
         loop {
             let mut running_jobs = self.current_jobs.load(Ordering::Relaxed);
             if running_jobs < self.min_concurrency {
@@ -215,18 +216,22 @@ where
             tokio::select! {
                 biased;
                 _ = &mut close_rx => {
-                    let mut workers = self.queue.workers.write().await;
-                    workers.remove_worker(self.listener.id);
-                    return;
+                    self.shutdown().await;
+                    break;
                 }
-                _ = self.listener.notify_task_ready.notified(), if grab_new_jobs  => {
-                    self.run_ready_jobs().await;
+                _ = global_close_rx.changed() => {
+                    self.shutdown().await;
+                    break;
                 }
-                _ = self.job_finished.notified() => {
-                    continue;
-                }
+                _ = self.listener.notify_task_ready.notified(), if grab_new_jobs  => {}
+                _ = self.job_finished.notified() => {}
             }
         }
+    }
+
+    async fn shutdown(&self) -> Result<()> {
+        let mut workers = self.queue.workers.write().await;
+        workers.remove_worker(self.listener.id)
     }
 
     async fn run_ready_jobs(&self) -> Result<()> {
@@ -247,7 +252,7 @@ where
         let ready_jobs = self
             .queue
             .write_db(move |db| {
-                let mut tx = db.transaction()?;
+                let tx = db.transaction()?;
 
                 let mut ready_jobs = Vec::with_capacity(max_jobs as usize);
 

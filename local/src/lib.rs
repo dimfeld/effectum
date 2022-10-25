@@ -100,6 +100,9 @@ impl Queue {
 
         let run_jobs_task = tokio::task::spawn(run_jobs_task(shared_state.clone()));
 
+        // TODO Start task to monitor expired jobs
+        // TODO Optional task to delete old jobs from `done_jobs`
+
         let q = Queue {
             state: shared_state,
             tasks: Some(Tasks {

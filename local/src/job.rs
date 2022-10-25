@@ -158,13 +158,13 @@ impl Job {
         info: T,
         success: bool,
     ) -> Result<(), Error> {
-        let chan = self
+        let _chan = self
             .done
             .take()
             .expect("Called complete after job finished");
 
         let info = RunInfo {
-            success: true,
+            success,
             start: self.start_time,
             end: OffsetDateTime::now_utc(),
             info,
@@ -224,7 +224,7 @@ impl Job {
 
     /// Mark the job as failed.
     pub async fn fail<T: Serialize + Send>(&mut self, info: T) -> Result<(), Error> {
-        let chan = self.done.take().expect("Called fail after job finished");
+        let _chan = self.done.take().expect("Called fail after job finished");
         // Remove task from running jobs, update job info, calculate new retry time, and stick the
         // job back into pending.
         // If there is a checkpointed payload, use that. Otherwise use the original payload from the
