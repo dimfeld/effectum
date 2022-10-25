@@ -4,23 +4,6 @@ use uuid::Uuid;
 
 use crate::{Error, NewJob, Queue, Result};
 
-pub(crate) const ADD_JOB_QUERY: &str = r##"
-    INSERT INTO active_jobs
-    (external_id, job_type, priority, from_recurring_job, orig_run_at_time,
-        payload, max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
-        added_at, default_timeout, heartbeat_increment)
-    VALUES
-    ($external_id, $job_type, $priority, $from_recurring_job, $orig_run_at_time,
-        $payload, $max_retries, $backoff_multiplier, $backoff_randomization, $backoff_initial_interval,
-        $added_at, $default_timeout, $heartbeat_increment)
-"##;
-pub(crate) const ADD_PENDING_JOB_QUERY: &str = r##"
-    INSERT INTO pending
-    (job_id, priority, job_type, run_at, current_try, checkpointed_payload)
-    VALUES
-    ($job_id, $priority, $job_type, $run_at, $current_try, $checkpointed_payload)
-"##;
-
 impl Queue {
     pub async fn add_job(
         &self,
@@ -29,6 +12,7 @@ impl Queue {
     ) -> Result<(i64, Uuid)> {
         let external_id: Uuid = ulid::Ulid::new().into();
 
+        let job_type = job_config.job_type.clone();
         let task_id = self.state.write_db(move |db| {
             let tx = db.transaction()?;
 
@@ -36,13 +20,22 @@ impl Queue {
             let run_time = job_config.run_at.unwrap_or_else(OffsetDateTime::now_utc).unix_timestamp();
 
             let task_id = {
-                let mut add_job_stmt = tx.prepare_cached(ADD_JOB_QUERY)?;
+                let mut add_job_stmt = tx.prepare_cached(r##"
+                    INSERT INTO active_jobs
+                    (external_id, job_type, priority, from_recurring_job, orig_run_at, run_at, payload,
+                        current_try, max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
+                        added_at, default_timeout, heartbeat_increment, run_info)
+                    VALUES
+                    ($external_id, $job_type, $priority, $from_recurring_job, $run_at, $run_at, $payload,
+                        0, $max_retries, $backoff_multiplier, $backoff_randomization, $backoff_initial_interval,
+                        $added_at, $default_timeout, $heartbeat_increment, '[]')
+                "##)?;
                 add_job_stmt.execute(named_params! {
                     "$external_id": &external_id,
                     "$job_type": job_config.job_type,
                     "$priority": priority,
                     "$from_recurring_job": recurring_job_id,
-                    "$orig_run_at_time": run_time,
+                    "$run_at": run_time,
                     "$payload": job_config.payload.as_slice(),
                     "$max_retries": job_config.retries.max_retries,
                     "$backoff_multiplier": job_config.retries.backoff_multiplier,
@@ -53,19 +46,7 @@ impl Queue {
                     "$added_at": OffsetDateTime::now_utc().unix_timestamp(),
                 })?;
 
-                let task_id = tx.last_insert_rowid();
-
-                let mut add_pending_job_stmt = tx.prepare_cached(ADD_PENDING_JOB_QUERY)?;
-                add_pending_job_stmt.execute(named_params! {
-                    "$job_id": task_id,
-                    "$priority": priority,
-                    "$job_type": job_config.job_type,
-                    "$run_at": run_time,
-                    "$current_try": 0,
-                    "$checkpointed_payload": None::<&[u8]>,
-                })?;
-
-                task_id
+                tx.last_insert_rowid()
             };
 
             tx.commit()?;
@@ -74,7 +55,8 @@ impl Queue {
         })
         .await?;
 
-        self.state.notify_updated.notify_one();
+        let workers = self.state.workers.read().await;
+        workers.new_job_available(&job_type);
 
         Ok((task_id, external_id))
     }

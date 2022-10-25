@@ -2,7 +2,6 @@ use std::sync::atomic::AtomicI64;
 
 use rusqlite::{named_params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -12,22 +11,24 @@ use crate::{Error, Result};
 
 pub struct Job {
     pub id: Uuid,
-    job_id: i64,
-    worker_id: i64,
-    heartbeat_increment: i64,
-    done: Option<tokio::sync::oneshot::Sender<()>>,
+    pub(crate) job_id: i64,
+    pub worker_id: i64,
+    pub heartbeat_increment: i32,
     pub job_type: String,
-    pub priority: i64,
+    pub priority: i32,
     pub payload: Vec<u8>,
     pub expires: AtomicI64,
 
     pub start_time: OffsetDateTime,
-    backoff_multiplier: f32,
-    backoff_randomization: f32,
-    backoff_initial_interval: i32,
-    current_retry: i32,
 
-    queue: SharedState,
+    pub backoff_multiplier: f64,
+    pub backoff_randomization: f64,
+    pub backoff_initial_interval: i32,
+    pub current_try: i32,
+    pub max_retries: i32,
+
+    pub(crate) done: Option<tokio::sync::oneshot::Sender<()>>,
+    pub(crate) queue: SharedState,
 }
 
 impl Job {
@@ -38,17 +39,17 @@ impl Job {
         let job_id = self.job_id;
         let worker_id = self.worker_id;
         let now = OffsetDateTime::now_utc().unix_timestamp();
-        let new_expire_time = now + self.heartbeat_increment;
+        let new_expire_time = now + (self.heartbeat_increment as i64);
 
         let actual_new_expire_time = self
             .queue
             .write_db(move |db| {
                 let mut stmt = db.prepare_cached(
-                    r##"UPDATE running
-                SET checkpoint_payload=$payload,
+                    r##"UPDATE active_jobs
+                SET checkpointed_payload=$payload,
                     last_heartbeat=$now,
                     expires_at = MAX(expires_at, $new_expire_time)
-                WHERE job_id=$job_id AND worker_id=$worker_id
+                WHERE job_id=$job_id AND active_worker_id=$worker_id
                 RETURNING expires_at"##,
                 )?;
 
@@ -93,12 +94,12 @@ impl Job {
         let job_id = self.job_id;
         let worker_id = self.worker_id;
         let now = OffsetDateTime::now_utc().unix_timestamp();
-        let new_expire_time = now + self.heartbeat_increment;
+        let new_expire_time = now + self.heartbeat_increment as i64;
         let actual_new_expire_time = self
             .queue
             .write_db(move |db| {
                 let mut stmt = db.prepare_cached(
-                    r##"UPDATE running
+                    r##"UPDATE active_jobs
                 SET last_heartbeat=$now,
                     expires_at = MAX(expires_at, $new_expire_time)
                 WHERE job_id=$job_id AND worker_id=$worker_id
@@ -152,7 +153,11 @@ impl Job {
         serde_json::from_slice(self.payload.as_slice())
     }
 
-    pub async fn complete<T: Serialize + Send>(&mut self, info: T) -> Result<(), Error> {
+    async fn mark_job_done<T: Serialize + Send>(
+        &mut self,
+        info: T,
+        success: bool,
+    ) -> Result<(), Error> {
         let chan = self
             .done
             .take()
@@ -182,8 +187,7 @@ impl Job {
                               max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, default_timeout,
                               heartbeat_increment,
                               json_array_append(run_info, $this_run_info) AS run_info
-                        FROM running
-                        JOIN active_jobs USING(job_id)
+                        FROM active_jobs
                         WHERE job_id=$job_id AND worker_id=$worker_id"##)?;
 
                     let altered = stmt.execute(named_params! {
@@ -200,12 +204,9 @@ impl Job {
                         return Err(Error::ExpiredWhileRecordingSuccess);
                     }
 
-                    // Clean up the old entries.
+                    // Clean up the old entry.
                     let mut stmt = tx.prepare_cached(r##"DELETE FROM active_jobs WHERE job_id=$1"##)?;
                     stmt.execute(&[&job_id])?;
-
-                    let mut stmt = tx.prepare_cached(r##"DELETE FROM running WHERE job_id=$1 AND worker_id=$2"##)?;
-                    stmt.execute(&[&job_id, &worker_id])?;
                 }
 
                 tx.commit()?;
@@ -216,6 +217,11 @@ impl Job {
         Ok(())
     }
 
+    /// Mark the job as successful.
+    pub async fn complete<T: Serialize + Send>(&mut self, info: T) -> Result<(), Error> {
+        self.mark_job_done(info, true).await
+    }
+
     /// Mark the job as failed.
     pub async fn fail<T: Serialize + Send>(&mut self, info: T) -> Result<(), Error> {
         let chan = self.done.take().expect("Called fail after job finished");
@@ -224,12 +230,16 @@ impl Job {
         // If there is a checkpointed payload, use that. Otherwise use the original payload from the
         // job.
 
+        if self.current_try + 1 > self.max_retries {
+            return self.mark_job_done(info, false).await;
+        }
+
         // Calculate the next run time, given the backoff.
         let now = OffsetDateTime::now_utc();
-        let next_try_count = self.current_retry + 1;
-        let run_delta = (self.backoff_initial_interval as f32)
+        let next_try_count = self.current_try + 1;
+        let run_delta = (self.backoff_initial_interval as f64)
             * (self.backoff_multiplier).powi(next_try_count)
-            * (1.0 + rand::random::<f32>() * self.backoff_randomization);
+            * (1.0 + rand::random::<f64>() * self.backoff_randomization);
         let next_run_time = now.unix_timestamp() + (run_delta as i64);
         let job_id = self.job_id;
         let worker_id = self.worker_id;
@@ -243,47 +253,36 @@ impl Job {
 
         let this_run_info = serde_json::to_string(&info).map_err(Error::InvalidJobRunInfo)?;
 
-        self.queue.write_db(move |db| {
-            let tx = db.transaction()?;
+        self.queue
+            .write_db(move |db| {
+                let tx = db.transaction()?;
 
-            {
-                let mut stmt = tx.prepare_cached(r##"DELETE FROM running
-                    WHERE job_id=$1 AND worker_id=$2
-                    RETURNING priority, checkpointed_payload"##)?;
-                let (priority, checkpoint_payload) = stmt.query_row(&[&job_id, &worker_id], |row| {
-                    let priority : i64 = row.get(0)?;
-                    let payload : Option<Vec<u8>> = row.get(1)?;
-                    Ok((priority, payload))
-                })
-                    .optional()?
-                    .ok_or(Error::Expired)?;
+                {
+                    let mut stmt = tx.prepare_cached(
+                        r##"UPDATE active_jobs SET
+                    active_worker_id=null,
+                    run_at=$next_run_time,
+                    current_try = current_try + 1,
+                    run_info = json_array_append(COALESCE(run_info, '[]'), $this_run_info)
+                    WHERE job_id=$job_id AND active_worker_id=$worker_id"##,
+                    )?;
 
-                let mut stmt = tx.prepare_cached(
-                    r##"INSERT INTO pending (job_id, priority, job_type, run_at, current_try, checkpointed_payload)
-                    VALUES ($job_id, $priority, job_type, $next_run_time, $try_count, $payload)
-                    )"##)?;
-                stmt.execute(named_params!{
-                    "$job_id": job_id,
-                    "$priority": priority,
-                    "$next_run_time": next_run_time,
-                    "$try_count": next_try_count,
-                    "$payload": checkpoint_payload,
-                })?;
+                    let altered = stmt.execute(named_params! {
+                        "$job_id": job_id,
+                        "$worker_id": worker_id,
+                        "$this_run_info": this_run_info,
+                        "$next_run_time": next_run_time,
+                    })?;
 
-                let mut stmt = tx.prepare_cached(
-                    r##"UPDATE active_jobs
-                    SET run_info = json_array_append(run_info, $this_run_info)
-                    WHERE job_id=$job_id"##,
-                )?;
-                stmt.execute(named_params! {
-                    "$job_id": job_id,
-                    "$this_run_info": this_run_info
-                })?;
-            }
+                    if altered == 0 {
+                        return Err(Error::Expired);
+                    }
+                }
 
-            tx.commit()?;
-            Ok(())
-        }).await?;
+                tx.commit()?;
+                Ok(())
+            })
+            .await?;
 
         Ok(())
     }

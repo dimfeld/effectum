@@ -18,16 +18,14 @@ pub(crate) struct ListeningWorker {
 
 pub(crate) struct Workers {
     next_id: u64,
-    job_type_notifiers: HashMap<SmartString, broadcast::Sender<()>>,
     workers: HashMap<u64, Arc<ListeningWorker>>,
     workers_by_type: HashMap<SmartString, Vec<Arc<ListeningWorker>>>,
 }
 
 impl Workers {
-    pub fn new(notify_updated: Arc<tokio::sync::Notify>) -> Self {
+    pub fn new() -> Self {
         Workers {
             next_id: 0,
-            job_type_notifiers: HashMap::default(),
             workers: HashMap::default(),
             workers_by_type: HashMap::default(),
         }
@@ -57,13 +55,29 @@ impl Workers {
     }
 
     pub(crate) fn remove_worker(&mut self, worker_id: u64) -> Result<()> {
-        // This will likely do something in the future; it just doesn't yet.
         let worker = self
             .workers
             .remove(&worker_id)
             .ok_or(Error::WorkerNotFound(worker_id))?;
 
+        for job in &worker.job_types {
+            let type_workers = self.workers_by_type.get_mut(job);
+
+            if let Some(type_workers) = type_workers {
+                type_workers.retain(|w| !Arc::ptr_eq(w, &worker));
+            }
+        }
+
         Ok(())
+    }
+
+    pub(crate) fn new_job_available(&self, job_type: &str) {
+        let workers = self.workers_by_type.get(job_type);
+        if let Some(workers) = workers {
+            for worker in workers {
+                worker.notify_task_ready.notify_one();
+            }
+        }
     }
 }
 

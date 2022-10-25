@@ -1,11 +1,15 @@
 CREATE TABLE active_jobs (
   job_id INTEGER PRIMARY KEY,
   external_id blob not null,
+  active_worker_id bigint,
   job_type text not null,
   priority int not null default 0,
   from_recurring_job int,
-  orig_run_at_time bigint not null,
+  orig_run_at bigint not null,
+  run_at bigint not null,
   payload blob,
+  checkpointed_payload blob,
+  current_try int not null default 0,
   max_retries int not null,
   backoff_multiplier real not null,
   backoff_randomization real not null,
@@ -13,10 +17,14 @@ CREATE TABLE active_jobs (
   added_at bigint not null,
   default_timeout int not null,
   heartbeat_increment int not null,
-  run_info text
+  run_info text not null,
+  started_at bigint,
+  expires_at bigint
 );
 
 CREATE UNIQUE INDEX active_jobs_external_id ON active_jobs(external_id);
+CREATE INDEX pending_run_at ON active_jobs(priority desc, run_at) WHERE active_worker_id is null;
+CREATE INDEX running_expires_at ON active_jobs(expires_at) WHERE active_worker_id is not null;
 
 CREATE TABLE done_jobs (
   job_id INTEGER PRIMARY KEY,
@@ -41,29 +49,6 @@ CREATE TABLE done_jobs (
 CREATE UNIQUE INDEX done_jobs_external_id ON done_jobs(external_id);
 CREATE INDEX done_jobs_job_type ON done_jobs(done_time desc);
 CREATE INDEX done_jobs_job_type_and_time ON done_jobs(job_type, done_time desc);
-
-CREATE TABLE pending (
-  job_id INTEGER PRIMARY KEY,
-  priority int not null,
-  job_type text not null,
-  run_at bigint not null,
-  current_try int not null,
-  checkpointed_payload blob
-);
-
-CREATE INDEX pending_run_at ON pending(priority desc, run_at);
-
-CREATE TABLE running (
-  job_id INTEGER PRIMARY KEY,
-  worker_id int not null,
-  last_heartbeat bigint,
-  started_at bigint not null,
-  expires_at bigint not null,
-  current_try int not null,
-  checkpointed_payload blob
-);
-
-CREATE INDEX running_expires_at ON running(expires_at);
 
 CREATE TABLE recurring (
   recurrring_job_id INTEGER PRIMARY KEY,

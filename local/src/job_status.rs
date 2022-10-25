@@ -34,6 +34,12 @@ pub struct JobStatus {
     pub run_info: SmallVec<[RunInfo<Box<RawValue>>; 4]>,
 }
 
+#[derive(Serialize)]
+pub struct NumActiveJobs {
+    pub pending: u64,
+    pub running: u64,
+}
+
 impl Queue {
     pub async fn get_job_status(&self, external_id: Uuid) -> Result<JobStatus> {
         let conn = self.state.read_conn_pool.get().await?;
@@ -99,27 +105,21 @@ impl Queue {
         Ok(status)
     }
 
-    pub async fn num_pending_jobs(&self) -> Result<u64> {
+    pub async fn num_active_jobs(&self) -> Result<NumActiveJobs> {
         let conn = self.state.read_conn_pool.get().await?;
-        let count: u64 = conn
+        let (total, running): (i64, i64) = conn
             .interact(move |conn| {
-                let mut stmt = conn.prepare_cached("SELECT COUNT(*) FROM pending")?;
-                stmt.query_row([], |row| row.get(0))
+                let mut stmt = conn.prepare_cached(
+                    r##"SELECT COUNT(*) as total, COUNT(active_worker_id) AS running
+                    FROM active_jobs WHERE active_worker_id IS NULL"##,
+                )?;
+                stmt.query_row([], |row| Ok((row.get(0)?, row.get(1)?)))
             })
             .await??;
 
-        Ok(count)
-    }
-
-    pub async fn num_running_jobs(&self) -> Result<u64> {
-        let conn = self.state.read_conn_pool.get().await?;
-        let count: u64 = conn
-            .interact(move |conn| {
-                let mut stmt = conn.prepare_cached("SELECT COUNT(*) FROM running")?;
-                stmt.query_row([], |row| row.get(0))
-            })
-            .await??;
-
-        Ok(count)
+        Ok(NumActiveJobs {
+            pending: (total - running) as u64,
+            running: running as u64,
+        })
     }
 }

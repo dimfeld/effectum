@@ -88,7 +88,7 @@ impl Queue {
         let shared_state = SharedState(Arc::new(SharedStateData {
             db: std::sync::Mutex::new(conn),
             read_conn_pool,
-            workers: Mutex::new(Workers::new(notify_updated.clone())),
+            workers: tokio::sync::RwLock::new(Workers::new()),
             notify_updated,
             notify_workers_done: tokio::sync::Notify::new(),
             close: close_rx,
