@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::job::Job;
-use crate::job_registry::JobRegistry;
+use crate::job_registry::{JobDef, JobRegistry};
 use crate::shared_state::SharedState;
 use crate::worker_list::ListeningWorker;
 use crate::{Error, Queue, Result, SmartString};
@@ -119,11 +119,13 @@ where
             self.jobs
         };
 
-        let job_weights = job_list
+        let job_defs = job_list
             .iter()
-            .map(|job| {
-                let weight = self.registry.jobs.get(job).map(|j| j.weight).unwrap_or(1);
-                (job.clone(), weight)
+            .filter_map(|job| {
+                self.registry
+                    .jobs
+                    .get(job)
+                    .map(|job_def| (job.clone(), job_def.clone()))
             })
             .collect();
 
@@ -151,7 +153,7 @@ where
             listener,
             job_finished: Notify::new(),
             job_list: job_list.into_iter().map(String::from).collect(),
-            job_weights: Arc::new(job_weights),
+            job_defs: Arc::new(job_defs),
             queue: queue.state.clone(),
             context: self.context,
             min_concurrency,
@@ -179,7 +181,7 @@ where
     queue: SharedState,
     job_finished: Notify,
     job_list: Vec<String>,
-    job_weights: Arc<HashMap<SmartString, u16>>,
+    job_defs: Arc<HashMap<SmartString, JobDef<CONTEXT>>>,
     context: CONTEXT,
     current_jobs: Arc<AtomicU16>,
     min_concurrency: u16,
@@ -235,7 +237,7 @@ where
             .collect::<Vec<_>>();
 
         let queue = self.queue.clone();
-        let job_weights = self.job_weights.clone();
+        let job_defs = self.job_defs.clone();
         let current_jobs = self.current_jobs.clone();
         let worker_id = self.listener.id;
 
@@ -325,7 +327,10 @@ where
                     let mut running_jobs = running_jobs;
                     for job in jobs {
                         let job = job?;
-                        let weight = *job_weights.get(job.job_type.as_str()).unwrap_or(&1);
+                        let weight = job_defs
+                            .get(job.job_type.as_str())
+                            .map(|j| j.weight)
+                            .unwrap_or(1);
 
                         if running_jobs + weight > max_concurrency {
                             break;
@@ -372,9 +377,13 @@ where
             .await?;
 
         for job in ready_jobs {
-            // TODO run the job
+            self.run_job(job).await?;
         }
 
         Ok(())
+    }
+
+    async fn run_job(&self, (job, done): (Job, tokio::sync::oneshot::Receiver<()>)) -> Result<()> {
+        todo!();
     }
 }
