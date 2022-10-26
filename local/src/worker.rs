@@ -13,9 +13,9 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::job::Job;
-use crate::job_loop::ListeningWorker;
 use crate::job_registry::JobRegistry;
 use crate::shared_state::SharedState;
+use crate::worker_list::ListeningWorker;
 use crate::{Error, Queue, Result, SmartString};
 
 type WorkerId = u64;
@@ -27,12 +27,12 @@ struct CancellableTask {
 
 pub struct Worker {
     pub id: WorkerId,
-    job_loop_task: Option<CancellableTask>,
+    worker_list_task: Option<CancellableTask>,
 }
 
 impl Worker {
     pub async fn unregister(mut self, timeout: Option<Duration>) -> Result<()> {
-        if let Some(task) = self.job_loop_task.take() {
+        if let Some(task) = self.worker_list_task.take() {
             task.close_tx.send(()).ok();
             task.join_handle.await?;
         }
@@ -44,7 +44,7 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        if let Some(task) = self.job_loop_task.take() {
+        if let Some(task) = self.worker_list_task.take() {
             task.close_tx.send(()).ok();
             tokio::spawn(task.join_handle);
         }
@@ -175,7 +175,7 @@ where
 
         Ok(Worker {
             id: worker_id,
-            job_loop_task: Some(CancellableTask {
+            worker_list_task: Some(CancellableTask {
                 close_tx,
                 join_handle,
             }),

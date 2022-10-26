@@ -3,7 +3,7 @@ use std::sync::{atomic::AtomicU32, Arc};
 use ahash::{HashMap, HashSet};
 use tokio::{
     select,
-    sync::{broadcast, Notify},
+    sync::{broadcast, watch, Notify},
     time::{Duration, Instant},
 };
 
@@ -20,14 +20,16 @@ pub(crate) struct Workers {
     next_id: u64,
     workers: HashMap<u64, Arc<ListeningWorker>>,
     workers_by_type: HashMap<SmartString, Vec<Arc<ListeningWorker>>>,
+    worker_count_tx: watch::Sender<usize>,
 }
 
 impl Workers {
-    pub fn new() -> Self {
+    pub fn new(worker_count_tx: watch::Sender<usize>) -> Self {
         Workers {
             next_id: 0,
             workers: HashMap::default(),
             workers_by_type: HashMap::default(),
+            worker_count_tx,
         }
     }
 
@@ -50,6 +52,7 @@ impl Workers {
         }
 
         self.workers.insert(worker.id, worker.clone());
+        self.worker_count_tx.send_replace(self.workers.len());
 
         worker
     }
@@ -68,6 +71,8 @@ impl Workers {
             }
         }
 
+        self.worker_count_tx.send_replace(self.workers.len());
+
         Ok(())
     }
 
@@ -79,40 +84,6 @@ impl Workers {
             }
         }
     }
-}
-
-async fn run_ready_jobs(state: SharedState) -> Result<i64> {
-    // Get the task types which have waiting workers.
-    // Get ready jobs from the database for those task types.
-    // Send the jobs to workers, as available.
-    // Once everything is done, return the time of the next job.
-    // If we ran out of workers and there are still pending jobs, return the types of those jobs so
-    // that when workers become available we can notify the loop.
-    todo!()
-}
-
-pub(crate) async fn run_jobs_task(state: SharedState) -> Result<()> {
-    let mut close = state.close.clone();
-    loop {
-        let updated = state.notify_updated.notified();
-        tokio::pin!(updated);
-        // Tell the `Notified` to start waiting for a notification even though we aren't
-        // actually waiting yet.
-        updated.as_mut().enable();
-
-        let next_time = run_ready_jobs(state.clone()).await?;
-        let now = time::OffsetDateTime::now_utc().unix_timestamp();
-        let sleep_time = Instant::now() + Duration::from_secs((next_time - now) as u64);
-
-        select! {
-            _ = tokio::time::sleep_until(sleep_time), if next_time > now => {},
-            // Jobs were added, so check again.
-            _ = &mut updated => {},
-            _ = close.changed() => break,
-        }
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
