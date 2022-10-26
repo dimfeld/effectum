@@ -1,14 +1,11 @@
 use ahash::HashMap;
-use futures::future::join_all;
-use futures::Future;
-use rusqlite::{named_params, params};
-use serde::Serialize;
+use rusqlite::named_params;
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
-use tokio::sync::{broadcast, oneshot, Notify};
+use tokio::sync::{oneshot, Notify};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -31,15 +28,19 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub async fn unregister(mut self, timeout: Option<Duration>) -> Result<()> {
+    pub async fn unregister(mut self, timeout: Option<std::time::Duration>) -> Result<()> {
         if let Some(task) = self.worker_list_task.take() {
             task.close_tx.send(()).ok();
-            task.join_handle.await?;
+            if let Some(timeout) = timeout {
+                tokio::time::timeout(timeout, task.join_handle)
+                    .await
+                    .map_err(|_| Error::Timeout)??;
+            } else {
+                task.join_handle.await?;
+            }
         }
         Ok(())
     }
-
-    fn run_ready_jobs(&mut self) {}
 }
 
 impl Drop for Worker {
@@ -48,19 +49,6 @@ impl Drop for Worker {
             task.close_tx.send(()).ok();
             tokio::spawn(task.join_handle);
         }
-    }
-}
-
-impl<CONTEXT> WorkerInternal<CONTEXT>
-where
-    CONTEXT: Send + Sync + Debug + Clone + 'static,
-{
-    async fn close(state: &SharedState, id: WorkerId, timeout: Option<Duration>) -> Result<()> {
-        let mut workers = state.workers.write().await;
-        workers.remove_worker(id).ok();
-        drop(workers);
-
-        Ok(())
     }
 }
 
@@ -98,7 +86,7 @@ where
 
     pub fn job_types(mut self, job_types: &[impl AsRef<str>]) -> Self {
         self.jobs = job_types
-            .into_iter()
+            .iter()
             .map(|s| {
                 assert!(
                     self.registry.jobs.contains_key(s.as_ref()),
@@ -230,6 +218,8 @@ where
     }
 
     async fn shutdown(&self) -> Result<()> {
+        // TODO Wait for jobs to shut down
+
         let mut workers = self.queue.workers.write().await;
         workers.remove_worker(self.listener.id)
     }

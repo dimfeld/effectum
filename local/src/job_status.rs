@@ -21,10 +21,10 @@ pub struct JobStatus {
     pub id: Uuid,
     pub job_type: String,
     pub status: String,
-    pub priority: i64,
-    pub orig_run_at_time: OffsetDateTime,
+    pub priority: i32,
+    pub orig_run_at: OffsetDateTime,
     pub payload: Vec<u8>,
-    pub max_retries: i64,
+    pub max_retries: i32,
     pub backoff_multiplier: f64,
     pub backoff_randomization: f64,
     pub backoff_initial_interval: Duration,
@@ -49,14 +49,14 @@ impl Queue {
                 let mut stmt = conn.prepare_cached(
                     r##"
     SELECT job_type, 'active' AS status,
-        priority, orig_run_at_time, payload,
+        priority, orig_run_at, payload,
         max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
         added_at, default_timeout, heartbeat_increment, run_info
     FROM active_jobs
     WHERE external_id=$1
     UNION ALL
     SELECT job_type, status,
-        priority, orig_run_at_time, payload,
+        priority, orig_run_at, payload,
         max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
         added_at, default_timeout, heartbeat_increment, run_info
     FROM done_jobs
@@ -66,21 +66,24 @@ impl Queue {
                 )?;
 
                 let mut rows = stmt.query_and_then([external_id], |row| {
-                    let blob = row.get_ref(12)?.as_blob_or_null()?;
-                    let run_info: SmallVec<[RunInfo<Box<RawValue>>; 4]> = match blob {
-                        Some(blob) => {
-                            serde_json::from_slice(blob).map_err(Error::InvalidJobRunInfo)?
+                    let run_info_str = row
+                        .get_ref(12)?
+                        .as_str_or_null()
+                        .map_err(|e| Error::FromSql(e, "run_info"))?;
+                    let run_info: SmallVec<[RunInfo<Box<RawValue>>; 4]> = match run_info_str {
+                        Some(run_info_str) => {
+                            serde_json::from_str(run_info_str).map_err(Error::InvalidJobRunInfo)?
                         }
                         None => SmallVec::new(),
                     };
 
                     let status = JobStatus {
                         id: external_id,
-                        job_type: row.get(0)?,
+                        job_type: row.get(0).map_err(|e| Error::ColumnType(e, "job_type"))?,
                         status: row.get(1)?,
                         priority: row.get(2)?,
-                        orig_run_at_time: OffsetDateTime::from_unix_timestamp(row.get(3)?)
-                            .map_err(|_| Error::TimestampOutOfRange("orig_run_at_time"))?,
+                        orig_run_at: OffsetDateTime::from_unix_timestamp(row.get(3)?)
+                            .map_err(|_| Error::TimestampOutOfRange("orig_run_at"))?,
                         payload: row.get(4)?,
                         max_retries: row.get(5)?,
                         backoff_multiplier: row.get(6)?,
@@ -96,11 +99,11 @@ impl Queue {
                     Ok::<_, Error>(status)
                 })?;
 
-                let status = rows.next().ok_or(Error::NotFound)?;
+                let status = rows.next().ok_or(Error::NotFound)??;
 
                 Ok::<_, Error>(status)
             })
-            .await???;
+            .await??;
 
         Ok(status)
     }

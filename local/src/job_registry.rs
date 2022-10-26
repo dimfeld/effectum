@@ -1,15 +1,13 @@
-use std::{fmt::Debug, fmt::Display, pin::Pin, sync::Arc};
+use std::{fmt::Debug, fmt::Display, sync::Arc};
 
 use ahash::HashMap;
 use futures::Future;
 use serde::Serialize;
-use serde_json::json;
 
-use crate::{job::Job, worker::Worker, Queue, SmartString};
+use crate::{job::Job, SmartString};
 
 pub(crate) type JobFn<CONTEXT> =
     Arc<dyn Fn(Job, CONTEXT) -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;
-pub(crate) type JobResult = String;
 
 pub struct JobRegistry<CONTEXT>
 where

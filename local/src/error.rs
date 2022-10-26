@@ -12,8 +12,10 @@ pub enum Error {
     PoolError(#[from] deadpool_sqlite::PoolError),
     #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
-    #[error("Unexpected value type: {0}")]
-    FromSqlError(#[from] rusqlite::types::FromSqlError),
+    #[error("Unexpected value type for {1}: {0}")]
+    ColumnType(#[source] rusqlite::Error, &'static str),
+    #[error("Unexpected value type for {1}: {0}")]
+    FromSql(#[source] rusqlite::types::FromSqlError, &'static str),
     #[error("Internal error: {0}")]
     Panic(#[from] tokio::task::JoinError),
     #[error("Internal error: {0}")]

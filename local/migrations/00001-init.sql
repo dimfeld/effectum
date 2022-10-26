@@ -34,7 +34,7 @@ CREATE TABLE done_jobs (
   status text not null,
   done_time bigint not null,
   from_recurring_job int,
-  orig_run_at_time bigint not null,
+  orig_run_at bigint not null,
   payload blob,
   max_retries int not null,
   backoff_multiplier real not null,

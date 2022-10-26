@@ -1,10 +1,8 @@
 pub mod add_job;
-mod db;
 mod error;
 pub mod job_status;
 mod migrations;
 mod shared_state;
-mod update_job;
 mod worker_list;
 
 pub mod job;
@@ -21,7 +19,6 @@ use rusqlite::Connection;
 use shared_state::{SharedState, SharedStateData};
 use sqlite_functions::register_functions;
 use time::Duration;
-use tokio::{sync::Mutex, task::JoinHandle, time::error::Elapsed};
 use worker_list::Workers;
 
 pub(crate) type SmartString = smartstring::SmartString<smartstring::LazyCompact>;

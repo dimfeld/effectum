@@ -89,7 +89,7 @@ mod tests {
         assert_eq!(status.status, "active");
         assert_eq!(status.id, external_id);
         assert_eq!(status.priority, 1);
-        assert!(status.orig_run_at_time < after_start_time);
+        assert!(status.orig_run_at < after_start_time);
     }
 
     #[tokio::test]
@@ -113,7 +113,7 @@ mod tests {
         let (_, external_id) = queue.add_job(None, job).await.unwrap();
         let status = queue.get_job_status(external_id).await.unwrap();
 
-        assert_eq!(status.orig_run_at_time, job_time);
+        assert_eq!(status.orig_run_at, job_time);
         assert_eq!(status.status, "active");
         assert_eq!(status.id, external_id);
         assert_eq!(status.priority, 0);

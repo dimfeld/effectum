@@ -180,10 +180,10 @@ impl Job {
                 {
                     // Move job from active_jobs to done_jobs, and add the run info
                     let mut stmt = tx.prepare_cached(r##"INSERT INTO done_jobs
-                      (job_id, external_id, job_type, priority, status, done_time, from_recurring_job, orig_run_at_time, payload,
+                      (job_id, external_id, job_type, priority, status, done_time, from_recurring_job, orig_run_at, payload,
                        max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, default_timeout,
                        heartbeat_increment, run_info)
-                       SELECT job_id, external_id, job_type, priority, status, done_time, from_recurring_job, orig_run_at_time, payload,
+                       SELECT job_id, external_id, job_type, priority, status, done_time, from_recurring_job, orig_run_at, payload,
                               max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, default_timeout,
                               heartbeat_increment,
                               json_array_append(run_info, $this_run_info) AS run_info
