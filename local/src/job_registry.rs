@@ -1,7 +1,7 @@
-use std::{fmt::Debug, fmt::Display, sync::Arc};
+use std::{fmt::Debug, fmt::Display, panic::AssertUnwindSafe, sync::Arc};
 
 use ahash::HashMap;
-use futures::Future;
+use futures::{Future, FutureExt};
 use serde::Serialize;
 
 use crate::{job::Job, SmartString};
@@ -43,8 +43,9 @@ where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
     pub name: SmartString,
-    pub weight: u16,
     pub runner: JobFn<CONTEXT>,
+    pub weight: u16,
+    pub autohearbeat: bool,
 }
 
 impl<CONTEXT> JobDef<CONTEXT>
@@ -55,6 +56,7 @@ where
         name: impl Into<SmartString>,
         runner: F,
         weight: u16,
+        autohearbeat: bool,
     ) -> JobDef<CONTEXT>
     where
         F: Fn(&mut Job, CONTEXT) -> Fut + Send + Sync + Clone + 'static,
@@ -66,14 +68,27 @@ where
         let f = move |mut job: Job, context: CONTEXT| {
             let runner = runner.clone();
             tokio::spawn(async move {
-                let result = runner(&mut job, context).await;
+                let result = AssertUnwindSafe(runner(&mut job, context))
+                    .catch_unwind()
+                    .await;
 
                 if !job.is_done() && !job.is_expired() {
                     match result {
-                        Ok(info) => {
+                        Err(e) => {
+                            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                                s.to_string()
+                            } else if let Some(s) = e.downcast_ref::<String>() {
+                                s.clone()
+                            } else {
+                                "Panic".to_string()
+                            };
+
+                            job.fail(msg).await;
+                        }
+                        Ok(Ok(info)) => {
                             job.complete(info).await;
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             let msg = e.to_string();
                             job.fail(msg).await;
                         }
@@ -86,6 +101,7 @@ where
             name: name.into(),
             weight,
             runner: Arc::new(f),
+            autohearbeat,
         }
     }
 }

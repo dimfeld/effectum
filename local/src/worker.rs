@@ -4,9 +4,10 @@ use std::fmt::Debug;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::Arc;
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use tokio::sync::{oneshot, Notify};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::job::Job;
@@ -151,14 +152,16 @@ where
         let worker_id = listener.id;
         let worker_internal = WorkerInternal {
             listener,
-            job_finished: Notify::new(),
+            running_jobs: Arc::new(RunningJobs {
+                count: AtomicU16::new(0),
+                job_finished: Notify::new(),
+            }),
             job_list: job_list.into_iter().map(String::from).collect(),
             job_defs: Arc::new(job_defs),
             queue: queue.state.clone(),
             context: self.context,
             min_concurrency,
             max_concurrency,
-            current_jobs: Arc::new(AtomicU16::new(0)),
         };
 
         let join_handle = tokio::spawn(worker_internal.run(close_rx));
@@ -173,17 +176,21 @@ where
     }
 }
 
+struct RunningJobs {
+    count: AtomicU16,
+    job_finished: Notify,
+}
+
 struct WorkerInternal<CONTEXT>
 where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
     listener: Arc<ListeningWorker>,
     queue: SharedState,
-    job_finished: Notify,
     job_list: Vec<String>,
     job_defs: Arc<HashMap<SmartString, JobDef<CONTEXT>>>,
+    running_jobs: Arc<RunningJobs>,
     context: CONTEXT,
-    current_jobs: Arc<AtomicU16>,
     min_concurrency: u16,
     max_concurrency: u16,
 }
@@ -195,10 +202,10 @@ where
     async fn run(self, mut close_rx: oneshot::Receiver<()>) {
         let mut global_close_rx = self.queue.close.clone();
         loop {
-            let mut running_jobs = self.current_jobs.load(Ordering::Relaxed);
+            let mut running_jobs = self.running_jobs.count.load(Ordering::Relaxed);
             if running_jobs < self.min_concurrency {
                 self.run_ready_jobs().await;
-                running_jobs = self.current_jobs.load(Ordering::Relaxed);
+                running_jobs = self.running_jobs.count.load(Ordering::Relaxed);
             }
 
             let grab_new_jobs = running_jobs < self.min_concurrency;
@@ -214,7 +221,7 @@ where
                     break;
                 }
                 _ = self.listener.notify_task_ready.notified(), if grab_new_jobs  => {}
-                _ = self.job_finished.notified() => {}
+                _ = self.running_jobs.job_finished.notified() => {}
             }
         }
     }
@@ -227,9 +234,9 @@ where
     }
 
     async fn run_ready_jobs(&self) -> Result<()> {
-        let running_jobs = self.current_jobs.load(Ordering::Relaxed);
+        let running_count = self.running_jobs.count.load(Ordering::Relaxed);
         let max_concurrency = self.max_concurrency;
-        let max_jobs = max_concurrency - running_jobs;
+        let max_jobs = max_concurrency - running_count;
         let job_types = self
             .job_list
             .iter()
@@ -238,7 +245,7 @@ where
 
         let queue = self.queue.clone();
         let job_defs = self.job_defs.clone();
-        let current_jobs = self.current_jobs.clone();
+        let running_jobs = self.running_jobs.clone();
         let worker_id = self.listener.id;
 
         let ready_jobs = self
@@ -324,7 +331,7 @@ where
                         WHERE job_id=$job_id"##,
                     )?;
 
-                    let mut running_jobs = running_jobs;
+                    let mut running_count = running_count;
                     for job in jobs {
                         let job = job?;
                         let weight = job_defs
@@ -332,7 +339,7 @@ where
                             .map(|j| j.weight)
                             .unwrap_or(1);
 
-                        if running_jobs + weight > max_concurrency {
+                        if running_count + weight > max_concurrency {
                             break;
                         }
 
@@ -345,18 +352,19 @@ where
                             "$expiration": expiration
                         })?;
 
-                        running_jobs = current_jobs.fetch_add(weight, Ordering::Relaxed) + weight;
+                        running_count =
+                            running_jobs.count.fetch_add(weight, Ordering::Relaxed) + weight;
 
                         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
                         let job = Job {
                             id: job.external_id,
                             job_id: job.job_id,
-                            worker_id: worker_id as i64,
+                            worker_id,
                             heartbeat_increment: job.heartbeat_increment,
                             job_type: job.job_type,
                             payload: job.payload.unwrap_or_default(),
                             priority: job.priority,
-                            expires: AtomicI64::new(expiration),
+                            expires: Arc::new(AtomicI64::new(expiration)),
                             start_time: now,
                             current_try: job.current_try,
                             backoff_multiplier: job.backoff_multiplier,
@@ -383,7 +391,64 @@ where
         Ok(())
     }
 
-    async fn run_job(&self, (job, done): (Job, tokio::sync::oneshot::Receiver<()>)) -> Result<()> {
-        todo!();
+    async fn run_job(
+        &self,
+        (job, mut done): (Job, tokio::sync::oneshot::Receiver<()>),
+    ) -> Result<()> {
+        let job_def = self
+            .job_defs
+            .get(job.job_type.as_str())
+            .expect("Got job for unsupported type");
+
+        let worker_id = self.listener.id;
+        let job_id = job.job_id;
+        let weight = job_def.weight;
+        let running = self.running_jobs.clone();
+        let heartbeat_increment = job.heartbeat_increment;
+        let expires = job.expires.clone();
+        let queue = self.queue.clone();
+        let autoheartbeat = job_def.autohearbeat;
+
+        (job_def.runner)(job, self.context.clone());
+
+        tokio::spawn(async move {
+            if autoheartbeat && heartbeat_increment > 0 {
+                loop {
+                    tokio::select! {
+                        _ = wait_for_next_autoheartbeat(heartbeat_increment, &expires) => {
+                            let new_time =
+                                crate::job::send_heartbeat(job_id, worker_id, heartbeat_increment, &queue).await;
+
+                            // TODO log error
+                            if let Ok(new_time) = new_time {
+                                expires.store(new_time.unix_timestamp(), Ordering::Relaxed);
+                            }
+                        }
+                        _ = &mut done => {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                done.await.ok();
+            }
+
+            // Do this in a separate task from the job runner so that even if something goes horribly wrong
+            // we'll still be able to update the internal counts.
+            running.count.fetch_sub(weight, Ordering::Relaxed);
+            running.job_finished.notify_one();
+        });
+
+        Ok(())
     }
+}
+
+async fn wait_for_next_autoheartbeat(heartbeat_increment: i32, expires: &Arc<AtomicI64>) {
+    let before = (heartbeat_increment.min(30) / 2) as i64;
+    let next_heartbeat_time = expires.load(Ordering::Relaxed) - before;
+
+    let time_from_now = next_heartbeat_time - OffsetDateTime::now_utc().unix_timestamp();
+    let instant = Instant::now() + std::time::Duration::from_secs(time_from_now.max(0) as u64);
+
+    tokio::time::sleep_until(instant).await
 }

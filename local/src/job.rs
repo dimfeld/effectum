@@ -1,4 +1,5 @@
 use std::sync::atomic::AtomicI64;
+use std::sync::Arc;
 
 use rusqlite::{named_params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -12,12 +13,12 @@ use crate::{Error, Result};
 pub struct Job {
     pub id: Uuid,
     pub(crate) job_id: i64,
-    pub worker_id: i64,
+    pub worker_id: u64,
     pub heartbeat_increment: i32,
     pub job_type: String,
     pub priority: i32,
     pub payload: Vec<u8>,
-    pub expires: AtomicI64,
+    pub expires: Arc<AtomicI64>,
 
     pub start_time: OffsetDateTime,
 
@@ -91,41 +92,13 @@ impl Job {
 
     /// Tell the queue that the task is still running.
     pub async fn heartbeat(&mut self) -> Result<OffsetDateTime> {
-        let job_id = self.job_id;
-        let worker_id = self.worker_id;
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        let new_expire_time = now + self.heartbeat_increment as i64;
-        let actual_new_expire_time = self
-            .queue
-            .write_db(move |db| {
-                let mut stmt = db.prepare_cached(
-                    r##"UPDATE active_jobs
-                SET last_heartbeat=$now,
-                    expires_at = MAX(expires_at, $new_expire_time)
-                WHERE job_id=$job_id AND worker_id=$worker_id
-                RETURNING expires_at"##,
-                )?;
-
-                let actual_new_expire_time: Option<i64> = stmt
-                    .query_row(
-                        named_params! {
-                            "$new_expire_time": new_expire_time,
-                            "$now": now,
-                            "$job_id": job_id,
-                            "$worker_id": worker_id,
-                        },
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .optional()?;
-
-                Ok(actual_new_expire_time)
-            })
-            .await?;
-
-        let new_time = actual_new_expire_time.ok_or(Error::Expired).and_then(|t| {
-            OffsetDateTime::from_unix_timestamp(t)
-                .map_err(|_| Error::TimestampOutOfRange("new expiration time"))
-        })?;
+        let new_time = send_heartbeat(
+            self.job_id,
+            self.worker_id,
+            self.heartbeat_increment,
+            &self.queue,
+        )
+        .await?;
 
         self.update_expiration(new_time);
 
@@ -286,4 +259,46 @@ impl Job {
 
         Ok(())
     }
+}
+
+pub(crate) async fn send_heartbeat(
+    job_id: i64,
+    worker_id: u64,
+    heartbeat_increment: i32,
+    queue: &SharedState,
+) -> Result<OffsetDateTime> {
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let new_expire_time = now + heartbeat_increment as i64;
+    let actual_new_expire_time = queue
+        .write_db(move |db| {
+            let mut stmt = db.prepare_cached(
+                r##"UPDATE active_jobs
+                SET last_heartbeat=$now,
+                    expires_at = MAX(expires_at, $new_expire_time)
+                WHERE job_id=$job_id AND worker_id=$worker_id
+                RETURNING expires_at"##,
+            )?;
+
+            let actual_new_expire_time: Option<i64> = stmt
+                .query_row(
+                    named_params! {
+                        "$new_expire_time": new_expire_time,
+                        "$now": now,
+                        "$job_id": job_id,
+                        "$worker_id": worker_id,
+                    },
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+
+            Ok(actual_new_expire_time)
+        })
+        .await?;
+
+    let new_time = actual_new_expire_time.ok_or(Error::Expired).and_then(|t| {
+        OffsetDateTime::from_unix_timestamp(t)
+            .map_err(|_| Error::TimestampOutOfRange("new expiration time"))
+    })?;
+
+    Ok(new_time)
 }
