@@ -452,3 +452,11 @@ async fn wait_for_next_autoheartbeat(heartbeat_increment: i32, expires: &Arc<Ato
 
     tokio::time::sleep_until(instant).await
 }
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn shutdown() {
+        todo!();
+    }
+}

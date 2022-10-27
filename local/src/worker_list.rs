@@ -88,14 +88,18 @@ impl Workers {
 
 #[cfg(test)]
 mod tests {
-    use crate::Queue;
+    #[test]
+    fn add_worker() {
+        todo!();
+    }
 
-    #[tokio::test]
-    pub async fn run_job() {}
+    #[test]
+    fn remove_worker() {
+        todo!();
+    }
 
-    #[tokio::test]
-    pub async fn run_job_in_future() {}
-
-    #[tokio::test]
-    pub async fn run_jobs_with_priority() {}
+    #[test]
+    fn new_job_available() {
+        todo!();
+    }
 }

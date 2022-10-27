@@ -157,4 +157,106 @@ mod tests {
     async fn create_queue() {
         create_test_queue();
     }
+
+    #[tokio::test]
+    async fn run_job() {
+        todo!();
+    }
+
+    #[tokio::test]
+    async fn run_future_job() {
+        todo!();
+    }
+
+    mod retry {
+        #[tokio::test]
+        async fn success_after_retry() {
+            todo!();
+        }
+
+        #[tokio::test]
+        async fn exceed_max_retries() {
+            todo!();
+        }
+
+        #[tokio::test]
+        async fn retry_max_backoff() {
+            todo!();
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn remove_jobs() {
+        unimplemented!();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn clear_jobs() {
+        unimplemented!();
+    }
+
+    #[tokio::test]
+    async fn weighted_jobs() {
+        todo!();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn recurring_jobs() {
+        unimplemented!();
+    }
+
+    #[tokio::test]
+    async fn job_type_subset() {
+        todo!();
+    }
+
+    #[tokio::test]
+    async fn job_timeout() {
+        // TODO Need to track by a specific job_run_id, not just the worker id, since
+        // the next run of the job could assign it to the same worker again.
+        todo!();
+    }
+
+    #[tokio::test]
+    async fn manual_heartbeat() {
+        todo!();
+    }
+
+    #[tokio::test]
+    async fn auto_heartbeat() {
+        todo!();
+    }
+
+    #[tokio::test]
+    async fn job_priority() {
+        todo!();
+    }
+
+    #[tokio::test]
+    async fn checkpoint() {
+        // Set a checkpoint
+        // Fail the first run
+        // Ensure that the second run starts from the checkpoint.
+        todo!();
+    }
+
+    mod concurrency {
+        #[tokio::test]
+        async fn limit_to_max_concurrency() {
+            todo!();
+        }
+
+        #[tokio::test]
+        async fn fetches_batch() {
+            todo!();
+        }
+
+        #[tokio::test]
+        async fn fetches_again_at_min_concurrency() {
+            todo!();
+        }
+    }
 }
