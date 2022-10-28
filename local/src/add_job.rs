@@ -5,11 +5,7 @@ use uuid::Uuid;
 use crate::{Error, NewJob, Queue, Result};
 
 impl Queue {
-    pub async fn add_job(
-        &self,
-        recurring_job_id: Option<i64>,
-        job_config: NewJob,
-    ) -> Result<(i64, Uuid)> {
+    pub async fn add_job(&self, job_config: NewJob) -> Result<(i64, Uuid)> {
         let external_id: Uuid = ulid::Ulid::new().into();
 
         let job_type = job_config.job_type.clone();
@@ -34,7 +30,7 @@ impl Queue {
                     "$external_id": &external_id,
                     "$job_type": job_config.job_type,
                     "$priority": priority,
-                    "$from_recurring_job": recurring_job_id,
+                    "$from_recurring_job": job_config.recurring_job_id,
                     "$run_at": run_time,
                     "$payload": job_config.payload.as_slice(),
                     "$max_retries": job_config.retries.max_retries,
@@ -64,7 +60,7 @@ impl Queue {
 
 #[cfg(test)]
 mod tests {
-    use time::{Duration, OffsetDateTime};
+    use time::OffsetDateTime;
 
     use crate::{test_util::create_test_queue, NewJob};
 
@@ -75,14 +71,10 @@ mod tests {
         let job = NewJob {
             job_type: "a_job".to_string(),
             priority: Some(1),
-            run_at: None,
-            payload: Vec::new(),
-            retries: crate::Retries::default(),
-            timeout: Duration::minutes(5),
-            heartbeat_increment: Duration::seconds(30),
+            ..Default::default()
         };
 
-        let (_, external_id) = queue.add_job(None, job).await.unwrap();
+        let (_, external_id) = queue.add_job(job).await.unwrap();
         let after_start_time = OffsetDateTime::now_utc();
         let status = queue.get_job_status(external_id).await.unwrap();
 
@@ -102,15 +94,11 @@ mod tests {
 
         let job = NewJob {
             job_type: "a_job".to_string(),
-            priority: None,
             run_at: Some(job_time),
-            payload: Vec::new(),
-            retries: crate::Retries::default(),
-            timeout: Duration::minutes(5),
-            heartbeat_increment: Duration::seconds(30),
+            ..Default::default()
         };
 
-        let (_, external_id) = queue.add_job(None, job).await.unwrap();
+        let (_, external_id) = queue.add_job(job).await.unwrap();
         let status = queue.get_job_status(external_id).await.unwrap();
 
         assert_eq!(status.orig_run_at, job_time);

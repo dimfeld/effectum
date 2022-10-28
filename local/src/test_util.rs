@@ -1,9 +1,34 @@
-use std::{ops::Deref, time::Duration};
+use std::{
+    ops::Deref,
+    sync::{atomic::AtomicUsize, Arc},
+    time::Duration,
+};
 
 use futures::Future;
 use temp_dir::TempDir;
+use tokio::sync::Mutex;
 
-use crate::Queue;
+use crate::{worker::Worker, Queue};
+
+#[derive(Debug)]
+pub struct TestContext {
+    counter: AtomicUsize,
+    value: Mutex<Vec<String>>,
+}
+
+impl TestContext {
+    pub fn new() -> Arc<TestContext> {
+        Arc::new(TestContext {
+            counter: AtomicUsize::new(0),
+            value: Mutex::new(Vec::new()),
+        })
+    }
+
+    pub async fn push_str(&self, s: impl ToString) {
+        let mut value = self.value.lock().await;
+        value.push(s.to_string());
+    }
+}
 
 pub struct TestQueue {
     queue: Queue,
@@ -25,19 +50,19 @@ pub fn create_test_queue() -> TestQueue {
     TestQueue { queue, dir }
 }
 
-pub async fn wait_for<F, Fut, E>(label: &str, f: F)
+pub async fn wait_for<F, Fut, T, E>(label: &str, f: F) -> T
 where
     F: Fn() -> Fut,
-    Fut: Future<Output = Result<(), E>>,
+    Fut: Future<Output = Result<T, E>>,
     E: std::fmt::Display,
 {
     wait_for_timeout(label, Duration::from_secs(5), f).await
 }
 
-pub async fn wait_for_timeout<F, Fut, E>(label: &str, timeout: Duration, f: F)
+pub async fn wait_for_timeout<F, Fut, T, E>(label: &str, timeout: Duration, f: F) -> T
 where
     F: Fn() -> Fut,
-    Fut: Future<Output = Result<(), E>>,
+    Fut: Future<Output = Result<T, E>>,
     E: std::fmt::Display,
 {
     let max_check = 1000;
@@ -48,7 +73,7 @@ where
 
     loop {
         match f().await {
-            Ok(()) => return,
+            Ok(value) => return value,
             Err(e) => {
                 last_error = e;
             }

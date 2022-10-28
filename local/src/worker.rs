@@ -42,6 +42,17 @@ impl Worker {
         }
         Ok(())
     }
+
+    pub fn builder<'a, CONTEXT>(
+        registry: &'a JobRegistry<CONTEXT>,
+        queue: &'a Queue,
+        context: CONTEXT,
+    ) -> WorkerBuilder<'a, CONTEXT>
+    where
+        CONTEXT: Send + Sync + Debug + Clone + 'static,
+    {
+        WorkerBuilder::new(registry, queue, context)
+    }
 }
 
 impl Drop for Worker {
@@ -59,6 +70,7 @@ where
 {
     /// The job registry from which this worker should take its job functions.
     registry: &'a JobRegistry<CONTEXT>,
+    queue: &'a Queue,
     /// The context value to send to the worker's jobs.
     context: CONTEXT,
     /// Limit the job types this worker will run. Defaults to all job types in the registry.
@@ -75,9 +87,10 @@ impl<'a, CONTEXT> WorkerBuilder<'a, CONTEXT>
 where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
-    pub fn new(registry: &'a JobRegistry<CONTEXT>, context: CONTEXT) -> Self {
+    pub fn new(registry: &'a JobRegistry<CONTEXT>, queue: &'a Queue, context: CONTEXT) -> Self {
         Self {
             registry,
+            queue,
             context,
             jobs: Vec::new(),
             min_concurrency: None,
@@ -85,7 +98,7 @@ where
         }
     }
 
-    pub fn job_types(mut self, job_types: &[impl AsRef<str>]) -> Self {
+    pub fn job_types(&mut self, job_types: &[impl AsRef<str>]) -> &mut Self {
         self.jobs = job_types
             .iter()
             .map(|s| {
@@ -101,19 +114,19 @@ where
         self
     }
 
-    pub fn min_concurrency(mut self, min_concurrency: u16) -> Self {
+    pub fn min_concurrency(&mut self, min_concurrency: u16) -> &mut Self {
         assert!(min_concurrency > 0);
         self.min_concurrency = Some(min_concurrency);
         self
     }
 
-    pub fn max_concurrency(mut self, max_concurrency: u16) -> Self {
+    pub fn max_concurrency(&mut self, max_concurrency: u16) -> &mut Self {
         assert!(max_concurrency > 0);
         self.max_concurrency = Some(max_concurrency);
         self
     }
 
-    pub async fn build(self, queue: &Queue) -> Result<Worker> {
+    pub async fn build(self) -> Result<Worker> {
         let job_list = if self.jobs.is_empty() {
             self.registry.jobs.keys().cloned().collect()
         } else {
@@ -145,7 +158,7 @@ where
 
         let (close_tx, close_rx) = oneshot::channel();
 
-        let mut workers = queue.state.workers.write().await;
+        let mut workers = self.queue.state.workers.write().await;
         let listener = workers.add_worker(&job_list);
         drop(workers);
 
@@ -158,7 +171,7 @@ where
             }),
             job_list: job_list.into_iter().map(String::from).collect(),
             job_defs: Arc::new(job_defs),
-            queue: queue.state.clone(),
+            queue: self.queue.state.clone(),
             context: self.context,
             min_concurrency,
             max_concurrency,
@@ -407,7 +420,7 @@ where
         let heartbeat_increment = job.heartbeat_increment;
         let expires = job.expires.clone();
         let queue = self.queue.clone();
-        let autoheartbeat = job_def.autohearbeat;
+        let autoheartbeat = job_def.autoheartbeat;
 
         (job_def.runner)(job, self.context.clone());
 

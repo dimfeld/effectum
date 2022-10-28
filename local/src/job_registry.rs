@@ -1,4 +1,4 @@
-use std::{fmt::Debug, fmt::Display, panic::AssertUnwindSafe, sync::Arc};
+use std::{borrow::Borrow, fmt::Debug, fmt::Display, panic::AssertUnwindSafe, sync::Arc};
 
 use ahash::HashMap;
 use futures::{Future, FutureExt};
@@ -23,12 +23,12 @@ where
     pub fn new<JOBLIST>(jobs: JOBLIST) -> JobRegistry<CONTEXT>
     where
         JOBLIST: IntoIterator,
-        JOBLIST::Item: AsRef<JobDef<CONTEXT>>,
+        JOBLIST::Item: Borrow<JobDef<CONTEXT>>,
     {
         let jobs = jobs
             .into_iter()
             .map(|d| {
-                let d = d.as_ref().to_owned();
+                let d = d.borrow().to_owned();
                 (d.name.clone(), d)
             })
             .collect();
@@ -40,12 +40,12 @@ where
 #[derive(Clone)]
 pub struct JobDef<CONTEXT>
 where
-    CONTEXT: Send + Sync + Debug + Clone + 'static,
+    CONTEXT: Send + Debug + Clone + 'static,
 {
     pub name: SmartString,
     pub runner: JobFn<CONTEXT>,
     pub weight: u16,
-    pub autohearbeat: bool,
+    pub autoheartbeat: bool,
 }
 
 impl<CONTEXT> JobDef<CONTEXT>
@@ -56,7 +56,7 @@ where
         name: impl Into<SmartString>,
         runner: F,
         weight: u16,
-        autohearbeat: bool,
+        autoheartbeat: bool,
     ) -> JobDef<CONTEXT>
     where
         F: Fn(&mut Job, CONTEXT) -> Fut + Send + Sync + Clone + 'static,
@@ -101,7 +101,45 @@ where
             name: name.into(),
             weight,
             runner: Arc::new(f),
-            autohearbeat,
+            autoheartbeat,
         }
+    }
+
+    pub fn builder<F, Fut, T, E>(name: impl Into<SmartString>, runner: F) -> JobDefBuilder<CONTEXT>
+    where
+        F: Fn(&mut Job, CONTEXT) -> Fut + Send + Sync + Clone + 'static,
+        CONTEXT: Send + Debug + Clone + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + Sync,
+        T: Send + Sync + Serialize + 'static,
+        E: Send + Display + 'static,
+    {
+        let def = JobDef::new(name, runner, 1, false);
+        JobDefBuilder { def }
+    }
+}
+
+pub struct JobDefBuilder<CONTEXT>
+where
+    CONTEXT: Send + Debug + Clone + 'static,
+{
+    def: JobDef<CONTEXT>,
+}
+
+impl<CONTEXT> JobDefBuilder<CONTEXT>
+where
+    CONTEXT: Send + Debug + Clone + 'static,
+{
+    pub fn autoheartbeat(&mut self, autoheartbeat: bool) -> &mut Self {
+        self.def.autoheartbeat = autoheartbeat;
+        self
+    }
+
+    pub fn weight(&mut self, weight: u16) -> &mut Self {
+        self.def.weight = weight;
+        self
+    }
+
+    pub fn build(self) -> JobDef<CONTEXT> {
+        self.def
     }
 }

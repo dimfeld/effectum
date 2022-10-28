@@ -23,6 +23,7 @@ use worker_list::Workers;
 
 pub(crate) type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
 
+#[derive(Debug, Clone)]
 pub struct Retries {
     pub max_retries: u32,
     pub backoff_multiplier: f32,
@@ -41,6 +42,7 @@ impl Default for Retries {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct NewJob {
     job_type: String,
     priority: Option<i64>,
@@ -50,6 +52,22 @@ pub struct NewJob {
     retries: Retries,
     timeout: time::Duration,
     heartbeat_increment: time::Duration,
+    recurring_job_id: Option<i64>,
+}
+
+impl Default for NewJob {
+    fn default() -> Self {
+        Self {
+            job_type: Default::default(),
+            priority: Default::default(),
+            run_at: Default::default(),
+            payload: Default::default(),
+            retries: Default::default(),
+            timeout: Duration::minutes(5),
+            heartbeat_increment: Duration::seconds(120),
+            recurring_job_id: Default::default(),
+        }
+    }
 }
 
 struct Tasks {
@@ -151,7 +169,13 @@ impl Drop for Queue {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_util::create_test_queue;
+    use std::sync::Arc;
+
+    use crate::{
+        job_registry::{JobDef, JobRegistry},
+        test_util::{create_test_queue, wait_for, TestContext},
+        worker::Worker,
+    };
 
     #[tokio::test]
     async fn create_queue() {
@@ -160,6 +184,42 @@ mod tests {
 
     #[tokio::test]
     async fn run_job() {
+        let job_def = JobDef::builder("test", |_job, _context: Arc<TestContext>| async {
+            Ok::<_, String>("passed")
+        })
+        .build();
+
+        let registry = JobRegistry::new(&[job_def]);
+        let queue = create_test_queue();
+
+        let context = TestContext::new();
+        let _worker = Worker::builder(&registry, &queue, context.clone())
+            .build()
+            .await
+            .expect("failed to build worker");
+
+        let (_, job_id) = queue
+            .add_job(crate::NewJob {
+                job_type: "test".to_string(),
+                ..Default::default()
+            })
+            .await
+            .expect("failed to add job");
+
+        let status = wait_for("job to run", || async {
+            let status = queue.get_job_status(job_id).await.unwrap();
+            if status.status == "done" {
+                Ok(status)
+            } else {
+                Err(format!("job status is {}", status.status))
+            }
+        })
+        .await;
+        assert_eq!(status.status, "done");
+    }
+
+    #[tokio::test]
+    async fn worker_gets_pending_jobs_when_starting() {
         todo!();
     }
 
@@ -183,6 +243,16 @@ mod tests {
         async fn retry_max_backoff() {
             todo!();
         }
+    }
+
+    #[tokio::test]
+    async fn explicit_complete() {
+        todo!();
+    }
+
+    #[tokio::test]
+    async fn explicit_fail() {
+        todo!();
     }
 
     #[tokio::test]
@@ -258,5 +328,10 @@ mod tests {
         async fn fetches_again_at_min_concurrency() {
             todo!();
         }
+    }
+
+    #[tokio::test]
+    async fn shutdown() {
+        todo!();
     }
 }
