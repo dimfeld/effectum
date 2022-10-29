@@ -1,14 +1,15 @@
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::value::RawValue;
 use smallvec::SmallVec;
+use std::fmt::Debug;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::{Error, Queue, Result};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status")]
-pub struct RunInfo<T: Send> {
+pub struct RunInfo<T: Send + Debug> {
     pub success: bool,
     #[serde(with = "time::serde::timestamp")]
     pub start: OffsetDateTime,
@@ -17,6 +18,7 @@ pub struct RunInfo<T: Send> {
     pub info: T,
 }
 
+#[derive(Debug)]
 pub struct JobStatus {
     pub id: Uuid,
     pub job_type: String,
@@ -29,6 +31,7 @@ pub struct JobStatus {
     pub backoff_randomization: f64,
     pub backoff_initial_interval: Duration,
     pub added_at: OffsetDateTime,
+    pub finished_at: Option<OffsetDateTime>,
     pub default_timeout: Duration,
     pub heartbeat_increment: Duration,
     pub run_info: SmallVec<[RunInfo<Box<RawValue>>; 4]>,
@@ -48,17 +51,21 @@ impl Queue {
             .interact(move |conn| {
                 let mut stmt = conn.prepare_cached(
                     r##"
-    SELECT job_type, 'active' AS status,
+    SELECT job_type,
+        CASE WHEN
+            active_worker_id IS NOT NULL THEN 'running'
+            ELSE 'pending'
+        END AS status,
         priority, orig_run_at, payload,
         max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
-        added_at, default_timeout, heartbeat_increment, run_info
+        added_at, NULL as finished_at, default_timeout, heartbeat_increment, run_info
     FROM active_jobs
     WHERE external_id=$1
     UNION ALL
     SELECT job_type, status,
         priority, orig_run_at, payload,
         max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
-        added_at, default_timeout, heartbeat_increment, run_info
+        added_at, finished_at, default_timeout, heartbeat_increment, run_info
     FROM done_jobs
     WHERE external_id=$1
 
@@ -67,7 +74,7 @@ impl Queue {
 
                 let mut rows = stmt.query_and_then([external_id], |row| {
                     let run_info_str = row
-                        .get_ref(12)?
+                        .get_ref(13)?
                         .as_str_or_null()
                         .map_err(|e| Error::FromSql(e, "run_info"))?;
                     let run_info: SmallVec<[RunInfo<Box<RawValue>>; 4]> = match run_info_str {
@@ -76,6 +83,16 @@ impl Queue {
                         }
                         None => SmallVec::new(),
                     };
+
+                    let finished_at = row
+                        .get_ref(10)?
+                        .as_i64_or_null()
+                        .map_err(|e| Error::FromSql(e, "finished_at"))?
+                        .map(|i| {
+                            OffsetDateTime::from_unix_timestamp(i)
+                                .map_err(|_| Error::TimestampOutOfRange("finished_at"))
+                        })
+                        .transpose()?;
 
                     let status = JobStatus {
                         id: external_id,
@@ -91,8 +108,9 @@ impl Queue {
                         backoff_initial_interval: Duration::seconds(row.get(8)?),
                         added_at: OffsetDateTime::from_unix_timestamp(row.get(9)?)
                             .map_err(|_| Error::TimestampOutOfRange("added_at"))?,
-                        default_timeout: Duration::seconds(row.get(10)?),
-                        heartbeat_increment: Duration::seconds(row.get(11)?),
+                        finished_at,
+                        default_timeout: Duration::seconds(row.get(11)?),
+                        heartbeat_increment: Duration::seconds(row.get(12)?),
                         run_info,
                     };
 

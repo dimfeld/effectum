@@ -5,12 +5,13 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::Arc;
 use time::OffsetDateTime;
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::{oneshot, Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
+use tracing::{event, instrument, Level};
 use uuid::Uuid;
 
-use crate::job::Job;
+use crate::job::{Job, JobData};
 use crate::job_registry::{JobDef, JobRegistry};
 use crate::shared_state::SharedState;
 use crate::worker_list::ListeningWorker;
@@ -156,6 +157,14 @@ where
 
         let min_concurrency = self.min_concurrency.unwrap_or(max_concurrency / 2).max(1);
 
+        event!(
+            Level::INFO,
+            ?job_list,
+            min_concurrency,
+            max_concurrency,
+            "Starting worker",
+        );
+
         let (close_tx, close_rx) = oneshot::channel();
 
         let mut workers = self.queue.state.workers.write().await;
@@ -208,16 +217,26 @@ where
     max_concurrency: u16,
 }
 
+pub(crate) fn log_error<T, E>(result: Result<T, E>)
+where
+    E: std::error::Error,
+{
+    if let Err(e) = result {
+        event!(Level::ERROR, ?e);
+    }
+}
+
 impl<CONTEXT> WorkerInternal<CONTEXT>
 where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
+    #[instrument(parent = None, skip_all, fields(worker_id = %self.listener.id))]
     async fn run(self, mut close_rx: oneshot::Receiver<()>) {
         let mut global_close_rx = self.queue.close.clone();
         loop {
             let mut running_jobs = self.running_jobs.count.load(Ordering::Relaxed);
             if running_jobs < self.min_concurrency {
-                self.run_ready_jobs().await;
+                log_error(self.run_ready_jobs().await);
                 running_jobs = self.running_jobs.count.load(Ordering::Relaxed);
             }
 
@@ -226,15 +245,19 @@ where
             tokio::select! {
                 biased;
                 _ = &mut close_rx => {
-                    self.shutdown().await;
+                    log_error(self.shutdown().await);
                     break;
                 }
                 _ = global_close_rx.changed() => {
-                    self.shutdown().await;
+                    log_error(self.shutdown().await);
                     break;
                 }
-                _ = self.listener.notify_task_ready.notified(), if grab_new_jobs  => {}
-                _ = self.running_jobs.job_finished.notified() => {}
+                _ = self.listener.notify_task_ready.notified(), if grab_new_jobs  => {
+                    event!(Level::TRACE, "New task ready");
+                }
+                _ = self.running_jobs.job_finished.notified() => {
+                    event!(Level::TRACE, "Job finished");
+                }
             }
         }
     }
@@ -247,6 +270,7 @@ where
     }
 
     async fn run_ready_jobs(&self) -> Result<()> {
+        tracing::trace!("Checking for ready jobs");
         let running_count = self.running_jobs.count.load(Ordering::Relaxed);
         let max_concurrency = self.max_concurrency;
         let max_jobs = max_concurrency - running_count;
@@ -281,11 +305,12 @@ where
                             backoff_initial_interval,
                             max_retries
                         FROM active_jobs
-                        WHERE job_type in rarray($job_types) AND run_at <= $now
+                        WHERE active_worker_id IS NULL AND job_type in rarray($job_types) AND run_at <= $now
                         ORDER BY priority DESC, run_at
                         LIMIT $limit"##,
                     )?;
 
+                    #[derive(Debug)]
                     struct JobResult {
                         job_id: i64,
                         external_id: Uuid,
@@ -340,17 +365,20 @@ where
 
                     let mut set_running = tx.prepare_cached(
                         r##"UPDATE active_jobs
-                        SET worker_id=$worker_id, started_at=$now, expires_at=$expiration
+                        SET active_worker_id=$worker_id, started_at=$now, expires_at=$expiration
                         WHERE job_id=$job_id"##,
                     )?;
 
                     let mut running_count = running_count;
                     for job in jobs {
+                        eprintln!("{:?}", job);
                         let job = job?;
                         let weight = job_defs
                             .get(job.job_type.as_str())
                             .map(|j| j.weight)
                             .unwrap_or(1);
+
+                        event!(Level::INFO, running_count, weight, max_concurrency);
 
                         if running_count + weight > max_concurrency {
                             break;
@@ -369,7 +397,7 @@ where
                             running_jobs.count.fetch_add(weight, Ordering::Relaxed) + weight;
 
                         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-                        let job = Job {
+                        let job = Job(Arc::new(JobData {
                             id: job.external_id,
                             job_id: job.job_id,
                             worker_id,
@@ -377,16 +405,16 @@ where
                             job_type: job.job_type,
                             payload: job.payload.unwrap_or_default(),
                             priority: job.priority,
-                            expires: Arc::new(AtomicI64::new(expiration)),
                             start_time: now,
                             current_try: job.current_try,
                             backoff_multiplier: job.backoff_multiplier,
                             backoff_randomization: job.backoff_randomization,
                             backoff_initial_interval: job.backoff_initial_interval,
                             max_retries: job.max_retries,
-                            done: Some(done_tx),
+                            done: Mutex::new(Some(done_tx)),
                             queue: queue.clone(),
-                        };
+                            expires: AtomicI64::new(expiration),
+                        }));
 
                         ready_jobs.push((job, done_rx));
                     }
@@ -404,6 +432,7 @@ where
         Ok(())
     }
 
+    #[instrument(skip(self), fields(worker_id = %self.listener.id))]
     async fn run_job(
         &self,
         (job, mut done): (Job, tokio::sync::oneshot::Receiver<()>),
@@ -414,27 +443,23 @@ where
             .expect("Got job for unsupported type");
 
         let worker_id = self.listener.id;
-        let job_id = job.job_id;
         let weight = job_def.weight;
         let running = self.running_jobs.clone();
-        let heartbeat_increment = job.heartbeat_increment;
-        let expires = job.expires.clone();
-        let queue = self.queue.clone();
         let autoheartbeat = job_def.autoheartbeat;
 
-        (job_def.runner)(job, self.context.clone());
+        (job_def.runner)(job.clone(), self.context.clone());
 
         tokio::spawn(async move {
-            if autoheartbeat && heartbeat_increment > 0 {
+            if autoheartbeat && job.heartbeat_increment > 0 {
                 loop {
                     tokio::select! {
-                        _ = wait_for_next_autoheartbeat(heartbeat_increment, &expires) => {
+                        _ = wait_for_next_autoheartbeat(job.heartbeat_increment, &job.expires) => {
                             let new_time =
-                                crate::job::send_heartbeat(job_id, worker_id, heartbeat_increment, &queue).await;
+                                crate::job::send_heartbeat(job.job_id, worker_id, job.heartbeat_increment, &job.queue).await;
 
                             // TODO log error
                             if let Ok(new_time) = new_time {
-                                expires.store(new_time.unix_timestamp(), Ordering::Relaxed);
+                                job.expires.store(new_time.unix_timestamp(), Ordering::Relaxed);
                             }
                         }
                         _ = &mut done => {
@@ -456,7 +481,7 @@ where
     }
 }
 
-async fn wait_for_next_autoheartbeat(heartbeat_increment: i32, expires: &Arc<AtomicI64>) {
+async fn wait_for_next_autoheartbeat(heartbeat_increment: i32, expires: &AtomicI64) {
     let before = (heartbeat_increment.min(30) / 2) as i64;
     let next_heartbeat_time = expires.load(Ordering::Relaxed) - before;
 

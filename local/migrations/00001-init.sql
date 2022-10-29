@@ -32,7 +32,6 @@ CREATE TABLE done_jobs (
   job_type text not null,
   priority int not null default 0,
   status text not null,
-  done_time bigint not null,
   from_recurring_job int,
   orig_run_at bigint not null,
   payload blob,
@@ -41,14 +40,15 @@ CREATE TABLE done_jobs (
   backoff_randomization real not null,
   backoff_initial_interval int not null,
   added_at bigint not null,
+  finished_at bigint not null,
   default_timeout int not null,
   heartbeat_increment int not null,
   run_info text
 );
 
 CREATE UNIQUE INDEX done_jobs_external_id ON done_jobs(external_id);
-CREATE INDEX done_jobs_job_type ON done_jobs(done_time desc);
-CREATE INDEX done_jobs_job_type_and_time ON done_jobs(job_type, done_time desc);
+CREATE INDEX done_jobs_job_type ON done_jobs(finished_at desc);
+CREATE INDEX done_jobs_job_type_and_time ON done_jobs(job_type, finished_at desc);
 
 CREATE TABLE recurring (
   recurrring_job_id INTEGER PRIMARY KEY,

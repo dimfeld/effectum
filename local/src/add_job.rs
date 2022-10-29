@@ -78,7 +78,7 @@ mod tests {
         let after_start_time = OffsetDateTime::now_utc();
         let status = queue.get_job_status(external_id).await.unwrap();
 
-        assert_eq!(status.status, "active");
+        assert_eq!(status.status, "pending");
         assert_eq!(status.id, external_id);
         assert_eq!(status.priority, 1);
         assert!(status.orig_run_at < after_start_time);
@@ -102,7 +102,7 @@ mod tests {
         let status = queue.get_job_status(external_id).await.unwrap();
 
         assert_eq!(status.orig_run_at, job_time);
-        assert_eq!(status.status, "active");
+        assert_eq!(status.status, "pending");
         assert_eq!(status.id, external_id);
         assert_eq!(status.priority, 0);
     }

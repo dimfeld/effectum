@@ -173,8 +173,9 @@ mod tests {
 
     use crate::{
         job_registry::{JobDef, JobRegistry},
-        test_util::{create_test_queue, wait_for, TestContext},
+        test_util::{create_test_queue, wait_for, wait_for_job, TestContext, TestEnvironment},
         worker::Worker,
+        NewJob,
     };
 
     #[tokio::test]
@@ -184,43 +185,38 @@ mod tests {
 
     #[tokio::test]
     async fn run_job() {
-        let job_def = JobDef::builder("test", |_job, _context: Arc<TestContext>| async {
-            Ok::<_, String>("passed")
-        })
-        .build();
+        let test = TestEnvironment::default();
 
-        let registry = JobRegistry::new(&[job_def]);
-        let queue = create_test_queue();
+        let _worker = test.worker().build().await.expect("failed to build worker");
 
-        let context = TestContext::new();
-        let _worker = Worker::builder(&registry, &queue, context.clone())
-            .build()
-            .await
-            .expect("failed to build worker");
-
-        let (_, job_id) = queue
-            .add_job(crate::NewJob {
-                job_type: "test".to_string(),
+        let (_, job_id) = test
+            .queue
+            .add_job(NewJob {
+                job_type: "counter".to_string(),
                 ..Default::default()
             })
             .await
             .expect("failed to add job");
 
-        let status = wait_for("job to run", || async {
-            let status = queue.get_job_status(job_id).await.unwrap();
-            if status.status == "done" {
-                Ok(status)
-            } else {
-                Err(format!("job status is {}", status.status))
-            }
-        })
-        .await;
-        assert_eq!(status.status, "done");
+        wait_for_job("job to run", &test.queue, job_id).await;
     }
 
     #[tokio::test]
     async fn worker_gets_pending_jobs_when_starting() {
-        todo!();
+        let test = TestEnvironment::default();
+
+        let (_, job_id) = test
+            .queue
+            .add_job(NewJob {
+                job_type: "counter".to_string(),
+                ..Default::default()
+            })
+            .await
+            .expect("failed to add job");
+
+        let _worker = test.worker().build().await.expect("failed to build worker");
+
+        wait_for_job("job to run", &test.queue, job_id).await;
     }
 
     #[tokio::test]

@@ -1,16 +1,31 @@
+use std::fmt::Debug;
+use std::ops::Deref;
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
 
 use rusqlite::{named_params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+use tokio::sync::Mutex;
+use tracing::{event, instrument, Level};
 use uuid::Uuid;
 
 use crate::job_status::RunInfo;
 use crate::shared_state::SharedState;
 use crate::{Error, Result};
 
-pub struct Job {
+#[derive(Debug, Clone)]
+pub struct Job(pub Arc<JobData>);
+
+impl Deref for Job {
+    type Target = JobData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+pub struct JobData {
     pub id: Uuid,
     pub(crate) job_id: i64,
     pub worker_id: u64,
@@ -18,7 +33,7 @@ pub struct Job {
     pub job_type: String,
     pub priority: i32,
     pub payload: Vec<u8>,
-    pub expires: Arc<AtomicI64>,
+    pub expires: AtomicI64,
 
     pub start_time: OffsetDateTime,
 
@@ -28,13 +43,34 @@ pub struct Job {
     pub current_try: i32,
     pub max_retries: i32,
 
-    pub(crate) done: Option<tokio::sync::oneshot::Sender<()>>,
+    pub(crate) done: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     pub(crate) queue: SharedState,
 }
 
-impl Job {
+impl Debug for JobData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Job")
+            .field("id", &self.id)
+            .field("job_id", &self.job_id)
+            .field("worker_id", &self.worker_id)
+            .field("heartbeat_increment", &self.heartbeat_increment)
+            .field("job_type", &self.job_type)
+            .field("priority", &self.priority)
+            .field("payload", &self.payload)
+            .field("expires", &self.expires)
+            .field("start_time", &self.start_time)
+            .field("backoff_multiplier", &self.backoff_multiplier)
+            .field("backoff_randomization", &self.backoff_randomization)
+            .field("backoff_initial_interval", &self.backoff_initial_interval)
+            .field("current_try", &self.current_try)
+            .field("max_retries", &self.max_retries)
+            .finish_non_exhaustive()
+    }
+}
+
+impl JobData {
     /// Checkpoint the task, replacing the payload with the passed in value.
-    pub async fn checkpoint_blob(&mut self, new_payload: Vec<u8>) -> Result<OffsetDateTime> {
+    pub async fn checkpoint_blob(&self, new_payload: Vec<u8>) -> Result<OffsetDateTime> {
         // This counts as a heartbeat, so update the expiration.
         // Update the checkpoint_payload.
         let job_id = self.job_id;
@@ -105,15 +141,16 @@ impl Job {
         Ok(new_time)
     }
 
-    fn update_expiration(&mut self, new_expiration: OffsetDateTime) {
+    fn update_expiration(&self, new_expiration: OffsetDateTime) {
         self.expires.store(
             new_expiration.unix_timestamp(),
             std::sync::atomic::Ordering::Relaxed,
         );
     }
 
-    pub(crate) fn is_done(&self) -> bool {
-        self.done.is_none()
+    pub(crate) async fn is_done(&self) -> bool {
+        let done = self.done.lock().await;
+        done.is_none()
     }
 
     /// Return if the task is past the expiration time or not.
@@ -126,15 +163,14 @@ impl Job {
         serde_json::from_slice(self.payload.as_slice())
     }
 
-    async fn mark_job_done<T: Serialize + Send>(
-        &mut self,
+    async fn mark_job_done<T: Serialize + Send + Debug>(
+        &self,
         info: T,
         success: bool,
     ) -> Result<(), Error> {
-        let _chan = self
-            .done
-            .take()
-            .expect("Called complete after job finished");
+        let mut done = self.done.lock().await;
+        let _chan = done.take().expect("Called complete after job finished");
+        drop(done);
 
         let info = RunInfo {
             success,
@@ -153,20 +189,22 @@ impl Job {
                 {
                     // Move job from active_jobs to done_jobs, and add the run info
                     let mut stmt = tx.prepare_cached(r##"INSERT INTO done_jobs
-                      (job_id, external_id, job_type, priority, status, done_time, from_recurring_job, orig_run_at, payload,
-                       max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, default_timeout,
+                      (job_id, external_id, job_type, priority, status, from_recurring_job, orig_run_at, payload,
+                       max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, finished_at, default_timeout,
                        heartbeat_increment, run_info)
-                       SELECT job_id, external_id, job_type, priority, status, done_time, from_recurring_job, orig_run_at, payload,
-                              max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, default_timeout,
+                       SELECT job_id, external_id, job_type, priority, $status, from_recurring_job, orig_run_at, payload,
+                              max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, $now, default_timeout,
                               heartbeat_increment,
                               json_array_append(run_info, $this_run_info) AS run_info
                         FROM active_jobs
-                        WHERE job_id=$job_id AND worker_id=$worker_id"##)?;
+                        WHERE job_id=$job_id AND active_worker_id=$worker_id"##)?;
 
                     let altered = stmt.execute(named_params! {
                             "$job_id": job_id,
                             "$worker_id": worker_id,
-                            "$this_run_info": this_run_info
+                            "$now": OffsetDateTime::now_utc().unix_timestamp(),
+                            "$this_run_info": this_run_info,
+                            "$status": if success { "success" } else { "failed" },
                         })?;
 
                     if altered == 0 {
@@ -191,13 +229,17 @@ impl Job {
     }
 
     /// Mark the job as successful.
-    pub async fn complete<T: Serialize + Send>(&mut self, info: T) -> Result<(), Error> {
+    #[instrument]
+    pub async fn complete<T: Serialize + Send + Debug>(&self, info: T) -> Result<(), Error> {
         self.mark_job_done(info, true).await
     }
 
     /// Mark the job as failed.
-    pub async fn fail<T: Serialize + Send>(&mut self, info: T) -> Result<(), Error> {
-        let _chan = self.done.take().expect("Called fail after job finished");
+    #[instrument]
+    pub async fn fail<T: Serialize + Send + Debug>(&self, info: T) -> Result<(), Error> {
+        let mut done = self.done.lock().await;
+        let _chan = done.take().expect("Called fail after job finished");
+        drop(done);
         // Remove task from running jobs, update job info, calculate new retry time, and stick the
         // job back into pending.
         // If there is a checkpointed payload, use that. Otherwise use the original payload from the

@@ -26,5 +26,8 @@ pub fn register_functions(conn: &mut rusqlite::Connection) -> Result<(), rusqlit
             Ok(result)
         },
     )?;
+
+    rusqlite::vtab::array::load_module(conn)?;
+
     Ok(())
 }
