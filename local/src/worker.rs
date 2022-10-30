@@ -230,7 +230,7 @@ impl<CONTEXT> WorkerInternal<CONTEXT>
 where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
-    #[instrument(parent = None, skip_all, fields(worker_id = %self.listener.id))]
+    #[instrument(parent = None, name="worker_loop", skip_all, fields(worker_id = %self.listener.id))]
     async fn run(self, mut close_rx: oneshot::Receiver<()>) {
         let mut global_close_rx = self.queue.close.clone();
         loop {
@@ -286,6 +286,7 @@ where
         let worker_id = self.listener.id;
         let now = self.queue.time.now();
         let now_timestamp = now.unix_timestamp();
+        event!(Level::TRACE, %now, "Checking ready jobs");
 
         let ready_jobs = self
             .queue
@@ -371,14 +372,13 @@ where
 
                     let mut running_count = running_count;
                     for job in jobs {
-                        eprintln!("{:?}", job);
                         let job = job?;
                         let weight = job_defs
                             .get(job.job_type.as_str())
                             .map(|j| j.weight)
                             .unwrap_or(1);
 
-                        event!(Level::INFO, running_count, weight, max_concurrency);
+                        event!(Level::DEBUG, running_count, weight, max_concurrency);
 
                         if running_count + weight > max_concurrency {
                             break;
@@ -389,7 +389,7 @@ where
                         set_running.execute(named_params! {
                             "$job_id": job.job_id,
                             "$worker_id": worker_id,
-                            "$now": now,
+                            "$now": now_timestamp,
                             "$expiration": expiration
                         })?;
 
@@ -432,7 +432,7 @@ where
         Ok(())
     }
 
-    #[instrument(skip(self), fields(worker_id = %self.listener.id))]
+    #[instrument(level="debug", skip(self, done), fields(worker_id = %self.listener.id))]
     async fn run_job(
         &self,
         (job, mut done): (Job, tokio::sync::oneshot::Receiver<()>),
@@ -452,6 +452,7 @@ where
 
         tokio::spawn(async move {
             if autoheartbeat && job.heartbeat_increment > 0 {
+                event!(Level::DEBUG, ?job, "Starting autoheartbeat");
                 loop {
                     tokio::select! {
                         _ = wait_for_next_autoheartbeat(&time, job.heartbeat_increment, &job.expires) => {

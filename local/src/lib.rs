@@ -7,6 +7,7 @@ mod worker_list;
 
 pub mod job;
 pub mod job_registry;
+mod pending_jobs;
 mod sqlite_functions;
 #[cfg(test)]
 mod test_util;
@@ -14,11 +15,14 @@ pub mod worker;
 
 use std::{path::Path, sync::Arc};
 
+use deadpool_sqlite::{Hook, HookError, HookErrorCause};
 pub use error::{Error, Result};
+use pending_jobs::monitor_pending_jobs;
 use rusqlite::Connection;
 use shared_state::{SharedState, SharedStateData};
 use sqlite_functions::register_functions;
 use time::Duration;
+use tokio::task::JoinHandle;
 use worker_list::Workers;
 
 pub(crate) type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
@@ -73,6 +77,7 @@ impl Default for NewJob {
 struct Tasks {
     close: tokio::sync::watch::Sender<()>,
     worker_count_rx: tokio::sync::watch::Receiver<usize>,
+    pending_jobs_monitor: JoinHandle<()>,
 }
 
 pub struct Queue {
@@ -85,7 +90,7 @@ impl Queue {
     ///
     /// Note that if you use an existing database file, this queue will set the journal style to
     /// WAL mode.
-    pub fn new(file: &Path) -> Result<Queue> {
+    pub async fn new(file: &Path) -> Result<Queue> {
         let mut conn = Connection::open(file).map_err(Error::OpenDatabase)?;
         conn.pragma_update(None, "journal", "wal")
             .map_err(Error::OpenDatabase)?;
@@ -95,10 +100,22 @@ impl Queue {
 
         let (close_tx, close_rx) = tokio::sync::watch::channel(());
 
-        let pool_cfg = deadpool_sqlite::Config::new(file);
-        let read_conn_pool = pool_cfg.create_pool(deadpool_sqlite::Runtime::Tokio1)?;
+        let read_conn_pool = deadpool_sqlite::Config::new(file)
+            .builder(deadpool_sqlite::Runtime::Tokio1)?
+            .recycle_timeout(Some(std::time::Duration::from_secs(5 * 60)))
+            .post_create(Hook::async_fn(move |conn, _| {
+                Box::pin(async move {
+                    conn.interact(register_functions)
+                        .await
+                        .map_err(|e| HookError::Abort(HookErrorCause::Message(e.to_string())))?
+                        .map_err(|e| HookError::Abort(HookErrorCause::Backend(e)))?;
+                    Ok(())
+                })
+            }))
+            .build()?;
 
         let (worker_count_tx, worker_count_rx) = tokio::sync::watch::channel(0);
+        let (pending_jobs_tx, pending_jobs_rx) = tokio::sync::mpsc::channel(10);
 
         let shared_state = SharedState(Arc::new(SharedStateData {
             db: std::sync::Mutex::new(conn),
@@ -106,7 +123,11 @@ impl Queue {
             workers: tokio::sync::RwLock::new(Workers::new(worker_count_tx)),
             close: close_rx,
             time: crate::shared_state::Time::new(),
+            pending_jobs_tx,
         }));
+
+        let pending_jobs_monitor =
+            monitor_pending_jobs(shared_state.clone(), pending_jobs_rx).await?;
 
         // TODO Optionally clean up running jobs here, treating them all as failures and scheduling
         // for retry. For later server mode, we probably want to do something more intelligent so
@@ -122,6 +143,7 @@ impl Queue {
             tasks: Some(Tasks {
                 close: close_tx,
                 worker_count_rx,
+                pending_jobs_monitor,
             }),
         };
 
@@ -171,7 +193,9 @@ impl Drop for Queue {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
+
+    use tracing::{event, Level};
 
     use crate::{
         job_registry::{JobDef, JobRegistry},
@@ -182,12 +206,12 @@ mod tests {
 
     #[tokio::test]
     async fn create_queue() {
-        create_test_queue();
+        create_test_queue().await;
     }
 
     #[tokio::test]
     async fn run_job() {
-        let test = TestEnvironment::default();
+        let test = TestEnvironment::new().await;
 
         let _worker = test.worker().build().await.expect("failed to build worker");
 
@@ -205,7 +229,7 @@ mod tests {
 
     #[tokio::test]
     async fn worker_gets_pending_jobs_when_starting() {
-        let test = TestEnvironment::default();
+        let test = TestEnvironment::new().await;
 
         let (_, job_id) = test
             .queue
@@ -221,10 +245,58 @@ mod tests {
         wait_for_job("job to run", &test.queue, job_id).await;
     }
 
-    #[tokio::test]
-    #[ignore]
+    #[tokio::test(start_paused = true)]
     async fn run_future_job() {
-        todo!();
+        let test = TestEnvironment::new().await;
+
+        let _worker = test.worker().build().await.expect("failed to build worker");
+
+        let run_at1 = test.time.now().replace_nanosecond(0).unwrap() + Duration::from_secs(10);
+        let run_at2 = run_at1 + Duration::from_secs(10);
+        let (_, job_id) = test
+            .queue
+            .add_job(NewJob {
+                job_type: "counter".to_string(),
+                run_at: Some(run_at1),
+                ..Default::default()
+            })
+            .await
+            .expect("failed to add job 1");
+        event!(Level::INFO, run_at=%run_at1, id=%job_id, "scheduled job 1");
+
+        let (_, job_id2) = test
+            .queue
+            .add_job(NewJob {
+                job_type: "counter".to_string(),
+                run_at: Some(run_at2),
+                ..Default::default()
+            })
+            .await
+            .expect("failed to add job 2");
+        event!(Level::INFO, run_at=%run_at2, id=%job_id2, "scheduled job 2");
+
+        tokio::time::sleep_until(test.time.instant_for_timestamp(run_at1.unix_timestamp())).await;
+        let status1 = wait_for_job("job 1 to run", &test.queue, job_id).await;
+        event!(Level::INFO, ?status1);
+        let started_at1 = status1.started_at.expect("started_at is set on job 1");
+        event!(Level::INFO, orig_run_at=%status1.orig_run_at, run_at=%run_at1, "job 1");
+        assert!(status1.orig_run_at >= run_at1);
+        assert!(started_at1 >= run_at1);
+
+        tokio::time::sleep_until(test.time.instant_for_timestamp(run_at2.unix_timestamp())).await;
+        let status2 = wait_for_job("job 2 to run", &test.queue, job_id2).await;
+        event!(Level::INFO, ?status2);
+        let started_at2 = status2.started_at.expect("started_at is set on job 2");
+        event!(Level::INFO, orig_run_at=%status2.orig_run_at, run_at=%run_at2, "job 2");
+        assert!(status2.orig_run_at >= run_at2);
+        assert!(started_at2 >= run_at2);
+
+        assert_eq!(
+            test.context
+                .counter
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
     }
 
     mod retry {

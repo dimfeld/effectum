@@ -7,6 +7,7 @@ use std::{
 use futures::Future;
 use once_cell::sync::Lazy;
 use temp_dir::TempDir;
+use time::OffsetDateTime;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -14,6 +15,7 @@ use crate::{
     job::Job,
     job_registry::{JobDef, JobRegistry},
     job_status::JobStatus,
+    shared_state::Time,
     worker::{Worker, WorkerBuilder},
     Queue,
 };
@@ -56,29 +58,24 @@ impl Deref for TestQueue {
     }
 }
 
-pub fn create_test_queue() -> TestQueue {
+pub async fn create_test_queue() -> TestQueue {
     let dir = temp_dir::TempDir::new().unwrap();
-    let queue = crate::Queue::new(&dir.child("test.sqlite")).unwrap();
+    let queue = crate::Queue::new(&dir.child("test.sqlite")).await.unwrap();
 
     TestQueue { queue, dir }
 }
 
-pub struct TestEnvironment {
+pub(crate) struct TestEnvironment {
     pub queue: TestQueue,
+    pub time: Time,
     pub registry: JobRegistry<Arc<TestContext>>,
     pub context: Arc<TestContext>,
 }
 
 impl TestEnvironment {
-    pub fn worker(&self) -> WorkerBuilder<Arc<TestContext>> {
-        Worker::builder(&self.registry, &self.queue, self.context.clone())
-    }
-}
-
-impl Default for TestEnvironment {
-    fn default() -> Self {
+    pub async fn new() -> Self {
         Lazy::force(&TRACING);
-        let queue = create_test_queue();
+        let queue = create_test_queue().await;
 
         let count_task = JobDef::builder("counter", |_job, context: Arc<TestContext>| async move {
             context
@@ -119,10 +116,15 @@ impl Default for TestEnvironment {
             JobRegistry::new(&[count_task, sleep_task, push_payload, wait_for_watch_task]);
 
         TestEnvironment {
+            time: queue.state.time.clone(),
             queue,
             registry,
             context: TestContext::new(),
         }
+    }
+
+    pub fn worker(&self) -> WorkerBuilder<Arc<TestContext>> {
+        Worker::builder(&self.registry, &self.queue, self.context.clone())
     }
 }
 
@@ -151,11 +153,12 @@ where
 {
     let max_check = 1000;
     let mut check_interval = 10;
-    let start_time = tokio::time::Instant::now();
+    let start_time = OffsetDateTime::now_utc();
     let final_time = start_time + timeout;
     let mut last_error: E;
 
     loop {
+        tokio::task::yield_now().await;
         match f().await {
             Ok(value) => return value,
             Err(e) => {
@@ -163,7 +166,7 @@ where
             }
         };
 
-        let now = tokio::time::Instant::now();
+        let now = OffsetDateTime::now_utc();
         if now >= final_time {
             panic!(
                 "Timed out waiting for {} after {}ms: {}",
@@ -174,8 +177,16 @@ where
         }
 
         check_interval = std::cmp::min(check_interval * 2, max_check);
-        let sleep_time = std::cmp::min(final_time - now, Duration::from_millis(check_interval));
-        tokio::time::sleep(sleep_time).await;
+        let sleep_time = std::cmp::min(
+            final_time - now,
+            time::Duration::milliseconds(check_interval),
+        );
+
+        // Since we're often using virtual time, we have to sleep here with the blocking
+        // APIs to actually wait.
+        tokio::task::spawn_blocking(move || std::thread::sleep(sleep_time.unsigned_abs()))
+            .await
+            .unwrap();
     }
 }
 

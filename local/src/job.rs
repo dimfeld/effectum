@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::ops::Deref;
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
@@ -22,6 +22,12 @@ impl Deref for Job {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl Display for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -65,6 +71,22 @@ impl Debug for JobData {
             .field("current_try", &self.current_try)
             .field("max_retries", &self.max_retries)
             .finish_non_exhaustive()
+    }
+}
+
+impl Display for JobData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let expires = OffsetDateTime::from_unix_timestamp(
+            self.expires.load(std::sync::atomic::Ordering::Relaxed),
+        )
+        .map(|t| t.to_string())
+        .unwrap_or_default();
+
+        write!(
+            f,
+            "Job {{ id: {}, job_type: {}, priority: {}, start_time: {}, expires: {}, try: {} }}",
+            self.id, self.job_type, self.priority, self.start_time, expires, self.current_try
+        )
     }
 }
 
@@ -156,7 +178,8 @@ impl JobData {
     /// Return if the task is past the expiration time or not.
     pub fn is_expired(&self) -> bool {
         let now = self.queue.time.now().unix_timestamp();
-        self.expires.load(std::sync::atomic::Ordering::Relaxed) <= now
+        let expired = self.expires.load(std::sync::atomic::Ordering::Relaxed);
+        now >= expired
     }
 
     pub fn json_payload<'a, T: Deserialize<'a>>(&'a self) -> Result<T, serde_json::Error> {
@@ -191,10 +214,10 @@ impl JobData {
                     // Move job from active_jobs to done_jobs, and add the run info
                     let mut stmt = tx.prepare_cached(r##"INSERT INTO done_jobs
                       (job_id, external_id, job_type, priority, status, from_recurring_job, orig_run_at, payload,
-                       max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, finished_at, default_timeout,
+                       max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, started_at, finished_at, default_timeout,
                        heartbeat_increment, run_info)
                        SELECT job_id, external_id, job_type, priority, $status, from_recurring_job, orig_run_at, payload,
-                              max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, $now, default_timeout,
+                              max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, started_at, $now, default_timeout,
                               heartbeat_increment,
                               json_array_append(run_info, $this_run_info) AS run_info
                         FROM active_jobs

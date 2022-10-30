@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use rusqlite::Connection;
 use time::OffsetDateTime;
+use tokio::time::Instant;
 
+use crate::pending_jobs::ScheduledJobType;
 use crate::worker_list::Workers;
 use crate::Result;
 
@@ -14,6 +16,7 @@ pub(crate) struct SharedStateData {
     pub workers: tokio::sync::RwLock<Workers>,
     pub close: tokio::sync::watch::Receiver<()>,
     pub time: Time,
+    pub pending_jobs_tx: tokio::sync::mpsc::Sender<ScheduledJobType>,
 }
 
 #[derive(Clone)]
@@ -62,7 +65,13 @@ impl Time {
     }
 
     pub fn now(&self) -> OffsetDateTime {
-        let now = tokio::time::Instant::now() - self.start_instant;
+        let now = self.start_instant.elapsed();
         self.start_time + now
+    }
+
+    pub fn instant_for_timestamp(&self, timestamp: i64) -> Instant {
+        let ts = std::cmp::max(timestamp - self.start_time.unix_timestamp(), 0) as u64;
+        let duration = std::time::Duration::from_secs(ts);
+        self.start_instant + duration
     }
 }

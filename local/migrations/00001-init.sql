@@ -40,6 +40,7 @@ CREATE TABLE done_jobs (
   backoff_randomization real not null,
   backoff_initial_interval int not null,
   added_at bigint not null,
+  started_at bigint,
   finished_at bigint not null,
   default_timeout int not null,
   heartbeat_increment int not null,

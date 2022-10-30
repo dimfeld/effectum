@@ -3,6 +3,7 @@ use std::{borrow::Borrow, fmt::Debug, fmt::Display, panic::AssertUnwindSafe, pin
 use ahash::HashMap;
 use futures::{Future, FutureExt};
 use serde::Serialize;
+use tracing::{event, span, Level};
 
 use crate::{job::Job, worker::log_error, SmartString};
 
@@ -72,11 +73,17 @@ where
         let f = move |job: Job, context: CONTEXT| {
             let runner = runner.clone();
             tokio::spawn(async move {
-                let result = AssertUnwindSafe(runner(job.clone(), context))
-                    .catch_unwind()
-                    .await;
+                let result = {
+                    let span = span!(Level::INFO, "run_job", %job);
+                    let _enter = span.enter();
+                    AssertUnwindSafe(runner(job.clone(), context))
+                        .catch_unwind()
+                        .await
+                };
 
-                if !job.is_expired() && !job.is_done().await {
+                let explicitly_finished = job.is_done().await;
+                event!(Level::DEBUG, ?job, %explicitly_finished, now=%job.queue.time.now(), "done");
+                if !explicitly_finished {
                     match result {
                         Err(e) => {
                             let msg = if let Some(s) = e.downcast_ref::<&str>() {

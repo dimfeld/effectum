@@ -3,6 +3,7 @@ use serde_json::value::RawValue;
 use smallvec::SmallVec;
 use std::fmt::Debug;
 use time::{Duration, OffsetDateTime};
+use tracing::{event, Level};
 use uuid::Uuid;
 
 use crate::{Error, Queue, Result};
@@ -31,9 +32,9 @@ pub struct JobStatus {
     pub backoff_randomization: f64,
     pub backoff_initial_interval: Duration,
     pub added_at: OffsetDateTime,
+    pub started_at: Option<OffsetDateTime>,
     pub finished_at: Option<OffsetDateTime>,
-    pub default_timeout: Duration,
-    pub heartbeat_increment: Duration,
+    pub expires_at: Option<OffsetDateTime>,
     pub run_info: SmallVec<[RunInfo<Box<RawValue>>; 4]>,
 }
 
@@ -58,14 +59,14 @@ impl Queue {
         END AS status,
         priority, orig_run_at, payload,
         max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
-        added_at, NULL as finished_at, default_timeout, heartbeat_increment, run_info
+        added_at, started_at, NULL as finished_at, expires_at, run_info
     FROM active_jobs
     WHERE external_id=$1
     UNION ALL
     SELECT job_type, status,
         priority, orig_run_at, payload,
         max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
-        added_at, finished_at, default_timeout, heartbeat_increment, run_info
+        added_at, started_at, finished_at, NULL as expires_at, run_info
     FROM done_jobs
     WHERE external_id=$1
 
@@ -73,6 +74,36 @@ impl Queue {
                 )?;
 
                 let mut rows = stmt.query_and_then([external_id], |row| {
+                    let started_at = row
+                        .get_ref(10)?
+                        .as_i64_or_null()
+                        .map_err(|e| Error::FromSql(e, "started_at"))?
+                        .map(|i| {
+                            OffsetDateTime::from_unix_timestamp(i)
+                                .map_err(|_| Error::TimestampOutOfRange("started_at"))
+                        })
+                        .transpose()?;
+
+                    let finished_at = row
+                        .get_ref(11)?
+                        .as_i64_or_null()
+                        .map_err(|e| Error::FromSql(e, "finished_at"))?
+                        .map(|i| {
+                            OffsetDateTime::from_unix_timestamp(i)
+                                .map_err(|_| Error::TimestampOutOfRange("finished_at"))
+                        })
+                        .transpose()?;
+
+                    let expires_at = row
+                        .get_ref(12)?
+                        .as_i64_or_null()
+                        .map_err(|e| Error::FromSql(e, "expires_at"))?
+                        .map(|i| {
+                            OffsetDateTime::from_unix_timestamp(i)
+                                .map_err(|_| Error::TimestampOutOfRange("expires_at"))
+                        })
+                        .transpose()?;
+
                     let run_info_str = row
                         .get_ref(13)?
                         .as_str_or_null()
@@ -83,16 +114,6 @@ impl Queue {
                         }
                         None => SmallVec::new(),
                     };
-
-                    let finished_at = row
-                        .get_ref(10)?
-                        .as_i64_or_null()
-                        .map_err(|e| Error::FromSql(e, "finished_at"))?
-                        .map(|i| {
-                            OffsetDateTime::from_unix_timestamp(i)
-                                .map_err(|_| Error::TimestampOutOfRange("finished_at"))
-                        })
-                        .transpose()?;
 
                     let status = JobStatus {
                         id: external_id,
@@ -108,9 +129,9 @@ impl Queue {
                         backoff_initial_interval: Duration::seconds(row.get(8)?),
                         added_at: OffsetDateTime::from_unix_timestamp(row.get(9)?)
                             .map_err(|_| Error::TimestampOutOfRange("added_at"))?,
+                        started_at,
                         finished_at,
-                        default_timeout: Duration::seconds(row.get(11)?),
-                        heartbeat_increment: Duration::seconds(row.get(12)?),
+                        expires_at,
                         run_info,
                     };
 

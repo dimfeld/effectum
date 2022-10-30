@@ -7,7 +7,9 @@ pub enum Error {
     #[error("Error opening database: {0}")]
     OpenDatabase(rusqlite::Error),
     #[error("Error opening database: {0}")]
-    CreatePoolError(#[from] deadpool_sqlite::CreatePoolError),
+    DeadpoolConfig(#[from] deadpool_sqlite::ConfigError),
+    #[error("Error opening database: {0}")]
+    PoolBuildError(#[from] deadpool_sqlite::BuildError),
     #[error("Error acquiring database connection: {0}")]
     PoolError(#[from] deadpool_sqlite::PoolError),
     #[error("Database error: {0}")]
