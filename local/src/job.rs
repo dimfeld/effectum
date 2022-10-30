@@ -75,7 +75,7 @@ impl JobData {
         // Update the checkpoint_payload.
         let job_id = self.job_id;
         let worker_id = self.worker_id;
-        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let now = self.queue.time.now().unix_timestamp();
         let new_expire_time = now + (self.heartbeat_increment as i64);
 
         let actual_new_expire_time = self
@@ -155,8 +155,8 @@ impl JobData {
 
     /// Return if the task is past the expiration time or not.
     pub fn is_expired(&self) -> bool {
-        self.expires.load(std::sync::atomic::Ordering::Relaxed)
-            <= OffsetDateTime::now_utc().unix_timestamp()
+        let now = self.queue.time.now().unix_timestamp();
+        self.expires.load(std::sync::atomic::Ordering::Relaxed) <= now
     }
 
     pub fn json_payload<'a, T: Deserialize<'a>>(&'a self) -> Result<T, serde_json::Error> {
@@ -175,7 +175,7 @@ impl JobData {
         let info = RunInfo {
             success,
             start: self.start_time,
-            end: OffsetDateTime::now_utc(),
+            end: self.queue.time.now(),
             info,
         };
 
@@ -183,6 +183,7 @@ impl JobData {
 
         let job_id = self.job_id;
         let worker_id = self.worker_id;
+        let now = self.queue.time.now().unix_timestamp();
         self.queue
             .write_db(move |db| {
                 let tx = db.transaction()?;
@@ -202,7 +203,7 @@ impl JobData {
                     let altered = stmt.execute(named_params! {
                             "$job_id": job_id,
                             "$worker_id": worker_id,
-                            "$now": OffsetDateTime::now_utc().unix_timestamp(),
+                            "$now": now,
                             "$this_run_info": this_run_info,
                             "$status": if success { "success" } else { "failed" },
                         })?;
@@ -250,7 +251,7 @@ impl JobData {
         }
 
         // Calculate the next run time, given the backoff.
-        let now = OffsetDateTime::now_utc();
+        let now = self.queue.time.now();
         let next_try_count = self.current_try + 1;
         let run_delta = (self.backoff_initial_interval as f64)
             * (self.backoff_multiplier).powi(next_try_count)
@@ -309,7 +310,7 @@ pub(crate) async fn send_heartbeat(
     heartbeat_increment: i32,
     queue: &SharedState,
 ) -> Result<OffsetDateTime> {
-    let now = OffsetDateTime::now_utc().unix_timestamp();
+    let now = queue.time.now().unix_timestamp();
     let new_expire_time = now + heartbeat_increment as i64;
     let actual_new_expire_time = queue
         .write_db(move |db| {

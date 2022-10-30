@@ -35,6 +35,10 @@ where
 
         JobRegistry { jobs }
     }
+
+    pub fn add(&mut self, job: &JobDef<CONTEXT>) {
+        self.jobs.insert(job.name.clone(), job.clone());
+    }
 }
 
 #[derive(Clone)]
@@ -65,7 +69,7 @@ where
         T: Send + Sync + Debug + Serialize + 'static,
         E: Send + Display + 'static,
     {
-        let f = move |mut job: Job, context: CONTEXT| {
+        let f = move |job: Job, context: CONTEXT| {
             let runner = runner.clone();
             tokio::spawn(async move {
                 let result = AssertUnwindSafe(runner(job.clone(), context))

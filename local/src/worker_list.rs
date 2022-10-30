@@ -89,16 +89,19 @@ impl Workers {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[ignore]
     fn add_worker() {
         todo!();
     }
 
     #[test]
+    #[ignore]
     fn remove_worker() {
         todo!();
     }
 
     #[test]
+    #[ignore]
     fn new_job_available() {
         todo!();
     }

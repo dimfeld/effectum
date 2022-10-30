@@ -99,11 +99,13 @@ impl Queue {
         let read_conn_pool = pool_cfg.create_pool(deadpool_sqlite::Runtime::Tokio1)?;
 
         let (worker_count_tx, worker_count_rx) = tokio::sync::watch::channel(0);
+
         let shared_state = SharedState(Arc::new(SharedStateData {
             db: std::sync::Mutex::new(conn),
             read_conn_pool,
             workers: tokio::sync::RwLock::new(Workers::new(worker_count_tx)),
             close: close_rx,
+            time: crate::shared_state::Time::new(),
         }));
 
         // TODO Optionally clean up running jobs here, treating them all as failures and scheduling
@@ -220,33 +222,39 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn run_future_job() {
         todo!();
     }
 
     mod retry {
         #[tokio::test]
+        #[ignore]
         async fn success_after_retry() {
             todo!();
         }
 
         #[tokio::test]
+        #[ignore]
         async fn exceed_max_retries() {
             todo!();
         }
 
         #[tokio::test]
+        #[ignore]
         async fn retry_max_backoff() {
             todo!();
         }
     }
 
     #[tokio::test]
+    #[ignore]
     async fn explicit_complete() {
         todo!();
     }
 
     #[tokio::test]
+    #[ignore]
     async fn explicit_fail() {
         todo!();
     }
@@ -264,6 +272,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn weighted_jobs() {
         todo!();
     }
@@ -275,11 +284,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn job_type_subset() {
         todo!();
     }
 
     #[tokio::test]
+    #[ignore]
     async fn job_timeout() {
         // TODO Need to track by a specific job_run_id, not just the worker id, since
         // the next run of the job could assign it to the same worker again.
@@ -287,21 +298,25 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn manual_heartbeat() {
         todo!();
     }
 
     #[tokio::test]
+    #[ignore]
     async fn auto_heartbeat() {
         todo!();
     }
 
     #[tokio::test]
+    #[ignore]
     async fn job_priority() {
         todo!();
     }
 
     #[tokio::test]
+    #[ignore]
     async fn checkpoint() {
         // Set a checkpoint
         // Fail the first run
@@ -311,22 +326,26 @@ mod tests {
 
     mod concurrency {
         #[tokio::test]
+        #[ignore]
         async fn limit_to_max_concurrency() {
             todo!();
         }
 
         #[tokio::test]
+        #[ignore]
         async fn fetches_batch() {
             todo!();
         }
 
         #[tokio::test]
+        #[ignore]
         async fn fetches_again_at_min_concurrency() {
             todo!();
         }
     }
 
     #[tokio::test]
+    #[ignore]
     async fn shutdown() {
         todo!();
     }

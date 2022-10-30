@@ -22,13 +22,18 @@ use crate::{
 pub struct TestContext {
     pub counter: AtomicUsize,
     pub value: Mutex<Vec<String>>,
+    pub watch_rx: tokio::sync::watch::Receiver<usize>,
+    pub watch_tx: tokio::sync::watch::Sender<usize>,
 }
 
 impl TestContext {
     pub fn new() -> Arc<TestContext> {
+        let (watch_tx, watch_rx) = tokio::sync::watch::channel(0);
         Arc::new(TestContext {
             counter: AtomicUsize::new(0),
             value: Mutex::new(Vec::new()),
+            watch_rx,
+            watch_tx,
         })
     }
 
@@ -85,7 +90,33 @@ impl Default for TestEnvironment {
 
         let sleep_task = JobDef::builder("sleep", sleep_task).build();
 
-        let registry = JobRegistry::new(&[count_task, sleep_task]);
+        let push_payload = JobDef::builder(
+            "push_payload",
+            |job, context: Arc<TestContext>| async move {
+                let payload = job.json_payload::<String>().expect("parsing payload");
+                context.push_str(payload).await;
+                Ok::<_, String>(())
+            },
+        )
+        .build();
+
+        let wait_for_watch_task = JobDef::builder(
+            "wait_for_watch",
+            |job, context: Arc<TestContext>| async move {
+                let watch_value = job
+                    .json_payload::<usize>()
+                    .expect("payload is not a number");
+                let mut watch_rx = context.watch_rx.clone();
+                while watch_rx.borrow().deref() != &watch_value {
+                    watch_rx.changed().await.expect("watch_rx changed");
+                }
+                Ok::<_, String>(())
+            },
+        )
+        .build();
+
+        let registry =
+            JobRegistry::new(&[count_task, sleep_task, push_payload, wait_for_watch_task]);
 
         TestEnvironment {
             queue,
@@ -95,7 +126,9 @@ impl Default for TestEnvironment {
     }
 }
 
-async fn sleep_task(job: Job, context: Arc<TestContext>) -> Result<(), String> {
+// Keep this one as a sepatate function to make sure that both full functions and closures can be
+// used as task runners.
+async fn sleep_task(job: Job, _context: Arc<TestContext>) -> Result<(), String> {
     let duration = job.json_payload::<u64>().unwrap_or(5000);
     tokio::time::sleep(Duration::from_millis(duration)).await;
     Ok(())

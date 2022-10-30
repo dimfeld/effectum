@@ -9,11 +9,12 @@ impl Queue {
         let external_id: Uuid = ulid::Ulid::new().into();
 
         let job_type = job_config.job_type.clone();
+        let now = self.state.time.now();
         let task_id = self.state.write_db(move |db| {
             let tx = db.transaction()?;
 
             let priority = job_config.priority.unwrap_or(0);
-            let run_time = job_config.run_at.unwrap_or_else(OffsetDateTime::now_utc).unix_timestamp();
+            let run_time = job_config.run_at.unwrap_or(now).unix_timestamp();
 
             let task_id = {
                 let mut add_job_stmt = tx.prepare_cached(r##"
@@ -39,7 +40,7 @@ impl Queue {
                     "$backoff_initial_interval": job_config.retries.backoff_initial_interval.whole_seconds(),
                     "$default_timeout" :job_config.timeout.whole_seconds(),
                     "$heartbeat_increment": job_config.heartbeat_increment.whole_seconds(),
-                    "$added_at": OffsetDateTime::now_utc().unix_timestamp(),
+                    "$added_at": now.unix_timestamp(),
                 })?;
 
                 tx.last_insert_rowid()
@@ -60,8 +61,6 @@ impl Queue {
 
 #[cfg(test)]
 mod tests {
-    use time::OffsetDateTime;
-
     use crate::{test_util::create_test_queue, NewJob};
 
     #[tokio::test]
@@ -75,7 +74,7 @@ mod tests {
         };
 
         let (_, external_id) = queue.add_job(job).await.unwrap();
-        let after_start_time = OffsetDateTime::now_utc();
+        let after_start_time = queue.state.time.now();
         let status = queue.get_job_status(external_id).await.unwrap();
 
         assert_eq!(status.status, "pending");
@@ -88,7 +87,7 @@ mod tests {
     async fn add_job_at_time() {
         let queue = create_test_queue();
 
-        let job_time = (OffsetDateTime::now_utc() + time::Duration::minutes(10))
+        let job_time = (queue.state.time.now() + time::Duration::minutes(10))
             .replace_nanosecond(0)
             .unwrap();
 

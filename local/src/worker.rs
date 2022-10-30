@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::job::{Job, JobData};
 use crate::job_registry::{JobDef, JobRegistry};
-use crate::shared_state::SharedState;
+use crate::shared_state::{SharedState, Time};
 use crate::worker_list::ListeningWorker;
 use crate::{Error, Queue, Result, SmartString};
 
@@ -284,6 +284,8 @@ where
         let job_defs = self.job_defs.clone();
         let running_jobs = self.running_jobs.clone();
         let worker_id = self.listener.id;
+        let now = self.queue.time.now();
+        let now_timestamp = now.unix_timestamp();
 
         let ready_jobs = self
             .queue
@@ -293,8 +295,6 @@ where
                 let mut ready_jobs = Vec::with_capacity(max_jobs as usize);
 
                 {
-                    let now = OffsetDateTime::now_utc();
-                    let now_timestamp = now.unix_timestamp();
                     let mut stmt = tx.prepare_cached(
                         r##"SELECT job_id, external_id, priority, job_type, current_try,
                             COALESCE(checkpointed_payload, payload) as payload,
@@ -446,6 +446,7 @@ where
         let weight = job_def.weight;
         let running = self.running_jobs.clone();
         let autoheartbeat = job_def.autoheartbeat;
+        let time = job.queue.time.clone();
 
         (job_def.runner)(job.clone(), self.context.clone());
 
@@ -453,7 +454,7 @@ where
             if autoheartbeat && job.heartbeat_increment > 0 {
                 loop {
                     tokio::select! {
-                        _ = wait_for_next_autoheartbeat(job.heartbeat_increment, &job.expires) => {
+                        _ = wait_for_next_autoheartbeat(&time, job.heartbeat_increment, &job.expires) => {
                             let new_time =
                                 crate::job::send_heartbeat(job.job_id, worker_id, job.heartbeat_increment, &job.queue).await;
 
@@ -481,11 +482,12 @@ where
     }
 }
 
-async fn wait_for_next_autoheartbeat(heartbeat_increment: i32, expires: &AtomicI64) {
+async fn wait_for_next_autoheartbeat(time: &Time, heartbeat_increment: i32, expires: &AtomicI64) {
+    let now = time.now();
     let before = (heartbeat_increment.min(30) / 2) as i64;
     let next_heartbeat_time = expires.load(Ordering::Relaxed) - before;
 
-    let time_from_now = next_heartbeat_time - OffsetDateTime::now_utc().unix_timestamp();
+    let time_from_now = next_heartbeat_time - now.unix_timestamp();
     let instant = Instant::now() + std::time::Duration::from_secs(time_from_now.max(0) as u64);
 
     tokio::time::sleep_until(instant).await
@@ -494,6 +496,7 @@ async fn wait_for_next_autoheartbeat(heartbeat_increment: i32, expires: &AtomicI
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    #[ignore]
     async fn shutdown() {
         todo!();
     }

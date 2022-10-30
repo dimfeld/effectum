@@ -2,6 +2,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use rusqlite::Connection;
+use time::OffsetDateTime;
 
 use crate::worker_list::Workers;
 use crate::Result;
@@ -12,6 +13,7 @@ pub(crate) struct SharedStateData {
     pub read_conn_pool: deadpool_sqlite::Pool,
     pub workers: tokio::sync::RwLock<Workers>,
     pub close: tokio::sync::watch::Receiver<()>,
+    pub time: Time,
 }
 
 #[derive(Clone)]
@@ -39,5 +41,28 @@ impl SharedState {
         .await??;
 
         Ok(result)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct Time {
+    start_instant: tokio::time::Instant,
+    start_time: time::OffsetDateTime,
+}
+
+impl Time {
+    pub fn new() -> Self {
+        let start_instant = tokio::time::Instant::now();
+        let start_time = time::OffsetDateTime::now_utc();
+
+        Time {
+            start_instant,
+            start_time,
+        }
+    }
+
+    pub fn now(&self) -> OffsetDateTime {
+        let now = tokio::time::Instant::now() - self.start_instant;
+        self.start_time + now
     }
 }
