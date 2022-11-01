@@ -459,6 +459,7 @@ where
 
                 tokio::select! {
                     _ = wait_for_next_autoheartbeat(&time, expires, job.heartbeat_increment), if use_autohearbeat => {
+                        event!(Level::DEBUG, %job, "Sending autoheartbeat");
                         let new_time =
                             crate::job::send_heartbeat(job.job_id, worker_id, job.heartbeat_increment, &job.queue).await;
 
@@ -468,6 +469,7 @@ where
                         }
                     }
                     _ = tokio::time::sleep_until(expires_instant) => {
+                        event!(Level::DEBUG, %job, "Job expired");
                         let now_expires = job.expires.load(Ordering::Relaxed);
                         if now_expires == expires {
                             if !job.is_done().await {

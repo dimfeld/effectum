@@ -88,23 +88,35 @@ where
 
                 let explicitly_finished = job.is_done().await;
                 event!(Level::DEBUG, ?job, %explicitly_finished, now=%job.queue.time.now(), "done");
-                if !explicitly_finished {
-                    match result {
-                        Err(e) => {
-                            let msg = if let Some(s) = e.downcast_ref::<&str>() {
-                                s.to_string()
-                            } else if let Some(s) = e.downcast_ref::<String>() {
-                                s.clone()
-                            } else {
-                                "Panic".to_string()
-                            };
+                match result {
+                    Err(e) => {
+                        let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                            s.to_string()
+                        } else if let Some(s) = e.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "Panic".to_string()
+                        };
 
+                        if explicitly_finished {
+                            event!(Level::ERROR, %msg, "Job panicked after it was completed");
+                        } else {
                             log_error(job.fail(msg).await);
                         }
-                        Ok(Ok(info)) => {
+                    }
+                    Ok(Ok(info)) => {
+                        if !explicitly_finished {
                             log_error(job.complete(info).await);
                         }
-                        Ok(Err(e)) => {
+                    }
+                    Ok(Err(e)) => {
+                        if explicitly_finished {
+                            event!(
+                                Level::ERROR,
+                                err = %e,
+                                "Job returned error after it was completed"
+                            );
+                        } else {
                             let msg = e.to_string();
                             log_error(job.fail(msg).await);
                         }
@@ -145,12 +157,12 @@ impl<CONTEXT> JobDefBuilder<CONTEXT>
 where
     CONTEXT: Send + Debug + Clone + 'static,
 {
-    pub fn autoheartbeat(&mut self, autoheartbeat: bool) -> &mut Self {
+    pub fn autoheartbeat(mut self, autoheartbeat: bool) -> Self {
         self.def.autoheartbeat = autoheartbeat;
         self
     }
 
-    pub fn weight(&mut self, weight: u16) -> &mut Self {
+    pub fn weight(mut self, weight: u16) -> Self {
         self.def.weight = weight;
         self
     }

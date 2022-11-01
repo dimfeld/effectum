@@ -553,16 +553,73 @@ mod tests {
         assert_eq!(status.run_info[2].info.to_string(), "\"Job expired\"");
     }
 
+    // TODO Run this in virtual time once https://github.com/tokio-rs/tokio/pull/5115 is merged.
     #[tokio::test]
-    #[ignore]
     async fn manual_heartbeat() {
-        todo!();
+        let mut test = TestEnvironment::new().await;
+        let job_def = JobDef::builder(
+            "manual_heartbeat",
+            |job, _context: Arc<TestContext>| async move {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                job.heartbeat().await?;
+                tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+                Ok::<_, crate::Error>(())
+            },
+        )
+        .build();
+
+        test.registry.add(&job_def);
+        let _worker = test.worker().build().await.expect("failed to build worker");
+
+        let (_, job_id) = test
+            .queue
+            .add_job(NewJob {
+                job_type: "manual_heartbeat".to_string(),
+                retries: crate::Retries {
+                    max_retries: 0,
+                    ..Default::default()
+                },
+                timeout: time::Duration::milliseconds(1000),
+                ..Default::default()
+            })
+            .await
+            .expect("failed to add job");
+
+        wait_for_job("job to succeed", &test.queue, job_id).await;
     }
 
+    // TODO Run this in virtual time once https://github.com/tokio-rs/tokio/pull/5115 is merged.
     #[tokio::test]
-    #[ignore]
     async fn auto_heartbeat() {
-        todo!();
+        let mut test = TestEnvironment::new().await;
+        let job_def = JobDef::builder(
+            "auto_heartbeat",
+            |_job, _context: Arc<TestContext>| async move {
+                tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+                Ok::<_, crate::Error>(())
+            },
+        )
+        .autoheartbeat(true)
+        .build();
+
+        test.registry.add(&job_def);
+        let _worker = test.worker().build().await.expect("failed to build worker");
+
+        let (_, job_id) = test
+            .queue
+            .add_job(NewJob {
+                job_type: "auto_heartbeat".to_string(),
+                retries: crate::Retries {
+                    max_retries: 0,
+                    ..Default::default()
+                },
+                timeout: time::Duration::milliseconds(2000),
+                ..Default::default()
+            })
+            .await
+            .expect("failed to add job");
+
+        wait_for_job("job to succeed", &test.queue, job_id).await;
     }
 
     #[tokio::test]
@@ -611,12 +668,64 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn checkpoint() {
-        // Set a checkpoint
-        // Fail the first run
-        // Ensure that the second run starts from the checkpoint.
-        todo!();
+        let mut test = TestEnvironment::new().await;
+        let job_def = JobDef::builder(
+            "checkpoint_job",
+            |job, _context: Arc<TestContext>| async move {
+                let payload = job.json_payload::<String>().unwrap();
+                event!(Level::INFO, %job, %payload);
+                match job.current_try {
+                    0 => {
+                        assert_eq!(payload, "initial", "checkpoint when loaded");
+                        job.checkpoint_json("first").await.unwrap();
+                        Err("fail 1")
+                    }
+                    1 => {
+                        assert_eq!(payload, "first", "checkpoint after first run");
+                        job.checkpoint_json("second").await.unwrap();
+                        Err("fail 2")
+                    }
+                    2 => {
+                        assert_eq!(payload, "second", "checkpoint after second run");
+                        job.checkpoint_json("third").await.unwrap();
+                        Ok("success")
+                    }
+                    _ => panic!("unexpected try number"),
+                }
+            },
+        )
+        .build();
+
+        test.registry.add(&job_def);
+        let _worker = test.worker().build().await.expect("failed to build worker");
+
+        let (_, job_id) = test
+            .queue
+            .add_job(NewJob {
+                job_type: "checkpoint_job".to_string(),
+                payload: serde_json::to_vec("initial").unwrap(),
+                retries: crate::Retries {
+                    max_retries: 3,
+                    backoff_multiplier: 1.0,
+                    backoff_initial_interval: time::Duration::milliseconds(1),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .await
+            .expect("failed to add job");
+
+        let status = wait_for_job("job to succeed", &test.queue, job_id).await;
+
+        assert_eq!(status.status, "success");
+        assert_eq!(status.run_info.len(), 3);
+        assert!(!status.run_info[0].success);
+        assert!(!status.run_info[1].success);
+        assert!(status.run_info[2].success);
+        assert_eq!(status.run_info[0].info.to_string(), "\"fail 1\"");
+        assert_eq!(status.run_info[1].info.to_string(), "\"fail 2\"");
+        assert_eq!(status.run_info[2].info.to_string(), "\"success\"");
     }
 
     mod concurrency {

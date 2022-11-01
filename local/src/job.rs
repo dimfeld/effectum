@@ -107,8 +107,10 @@ impl JobData {
                 let mut stmt = db.prepare_cached(
                     r##"UPDATE active_jobs
                 SET checkpointed_payload=$payload,
-                    last_heartbeat=$now,
-                    expires_at = MAX(expires_at, $new_expire_time)
+                    expires_at = CASE
+                        WHEN expires_at > $new_expire_time THEN expires_at
+                        ELSE $new_expire_time
+                    END
                 WHERE job_id=$job_id AND active_worker_id=$worker_id
                 RETURNING expires_at"##,
                 )?;
@@ -118,7 +120,6 @@ impl JobData {
                         named_params! {
                             "$payload": new_payload,
                             "$new_expire_time": new_expire_time,
-                            "$now": now,
                             "$job_id": job_id,
                             "$worker_id": worker_id,
                         },
@@ -141,16 +142,14 @@ impl JobData {
     }
 
     /// Checkpoint the task, replacing the payload with the passed in value.
-    pub async fn checkpoint_json<T: Serialize>(
-        &mut self,
-        new_payload: &T,
-    ) -> Result<OffsetDateTime> {
-        let blob = serde_json::to_vec(new_payload).map_err(Error::PayloadError)?;
+    pub async fn checkpoint_json<T: Serialize>(&self, new_payload: T) -> Result<OffsetDateTime> {
+        let blob = serde_json::to_vec(&new_payload).map_err(Error::PayloadError)?;
         self.checkpoint_blob(blob).await
     }
 
     /// Tell the queue that the task is still running.
-    pub async fn heartbeat(&mut self) -> Result<OffsetDateTime> {
+    #[instrument(level = "debug")]
+    pub async fn heartbeat(&self) -> Result<OffsetDateTime> {
         let new_time = send_heartbeat(
             self.job_id,
             self.worker_id,
@@ -164,6 +163,7 @@ impl JobData {
         Ok(new_time)
     }
 
+    #[instrument(level = "trace")]
     fn update_expiration(&self, new_expiration: OffsetDateTime) {
         self.expires.store(
             new_expiration.unix_timestamp(),
@@ -350,9 +350,11 @@ pub(crate) async fn send_heartbeat(
         .write_db(move |db| {
             let mut stmt = db.prepare_cached(
                 r##"UPDATE active_jobs
-                SET last_heartbeat=$now,
-                    expires_at = MAX(expires_at, $new_expire_time)
-                WHERE job_id=$job_id AND worker_id=$worker_id
+                SET expires_at = CASE
+                        WHEN expires_at > $new_expire_time THEN expires_at
+                        ELSE $new_expire_time
+                    END
+                WHERE job_id=$job_id AND active_worker_id=$worker_id
                 RETURNING expires_at"##,
             )?;
 
@@ -360,7 +362,6 @@ pub(crate) async fn send_heartbeat(
                 .query_row(
                     named_params! {
                         "$new_expire_time": new_expire_time,
-                        "$now": now,
                         "$job_id": job_id,
                         "$worker_id": worker_id,
                     },
