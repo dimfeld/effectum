@@ -43,10 +43,16 @@ impl TestContext {
         let mut value = self.value.lock().await;
         value.push(s.to_string());
     }
+
+    pub async fn get_values(&self) -> Vec<String> {
+        let value = self.value.lock().await;
+        value.clone()
+    }
 }
 
 pub struct TestQueue {
     queue: Queue,
+    #[allow(dead_code)]
     dir: TempDir,
 }
 
@@ -112,8 +118,25 @@ impl TestEnvironment {
         )
         .build();
 
-        let registry =
-            JobRegistry::new(&[count_task, sleep_task, push_payload, wait_for_watch_task]);
+        let retry_task = JobDef::builder("retry", |job, _context: Arc<TestContext>| async move {
+            let succeed_after = job
+                .json_payload::<usize>()
+                .expect("payload is not a number");
+            if job.current_try >= succeed_after as i32 {
+                Ok(format!("success on try {}", job.current_try))
+            } else {
+                Err(format!("fail on try {}", job.current_try))
+            }
+        })
+        .build();
+
+        let registry = JobRegistry::new(&[
+            count_task,
+            sleep_task,
+            push_payload,
+            wait_for_watch_task,
+            retry_task,
+        ]);
 
         TestEnvironment {
             time: queue.state.time.clone(),
@@ -191,9 +214,18 @@ where
 }
 
 pub async fn wait_for_job(label: &str, queue: &Queue, job_id: Uuid) -> JobStatus {
+    wait_for_job_status(label, queue, job_id, "success").await
+}
+
+pub async fn wait_for_job_status(
+    label: &str,
+    queue: &Queue,
+    job_id: Uuid,
+    desired_status: &str,
+) -> JobStatus {
     wait_for(label, || async {
         let status = queue.get_job_status(job_id).await.unwrap();
-        if status.status == "success" {
+        if status.status == desired_status {
             Ok(status)
         } else {
             Err(format!("job status {:?}", status))

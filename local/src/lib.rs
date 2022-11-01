@@ -253,27 +253,31 @@ mod tests {
 
         let run_at1 = test.time.now().replace_nanosecond(0).unwrap() + Duration::from_secs(10);
         let run_at2 = run_at1 + Duration::from_secs(10);
-        let (_, job_id) = test
-            .queue
-            .add_job(NewJob {
-                job_type: "counter".to_string(),
-                run_at: Some(run_at1),
-                ..Default::default()
-            })
-            .await
-            .expect("failed to add job 1");
-        event!(Level::INFO, run_at=%run_at1, id=%job_id, "scheduled job 1");
 
+        // Schedule job 2 first, to ensure that it's actually sorting by run_at
         let (_, job_id2) = test
             .queue
             .add_job(NewJob {
-                job_type: "counter".to_string(),
+                job_type: "push_payload".to_string(),
+                payload: serde_json::to_vec("job 2").unwrap(),
                 run_at: Some(run_at2),
                 ..Default::default()
             })
             .await
             .expect("failed to add job 2");
         event!(Level::INFO, run_at=%run_at2, id=%job_id2, "scheduled job 2");
+
+        let (_, job_id) = test
+            .queue
+            .add_job(NewJob {
+                job_type: "push_payload".to_string(),
+                payload: serde_json::to_vec("job 1").unwrap(),
+                run_at: Some(run_at1),
+                ..Default::default()
+            })
+            .await
+            .expect("failed to add job 1");
+        event!(Level::INFO, run_at=%run_at1, id=%job_id, "scheduled job 1");
 
         tokio::time::sleep_until(test.time.instant_for_timestamp(run_at1.unix_timestamp())).await;
         let status1 = wait_for_job("job 1 to run", &test.queue, job_id).await;
@@ -291,30 +295,89 @@ mod tests {
         assert!(status2.orig_run_at >= run_at2);
         assert!(started_at2 >= run_at2);
 
-        assert_eq!(
-            test.context
-                .counter
-                .load(std::sync::atomic::Ordering::Relaxed),
-            2
-        );
+        assert_eq!(test.context.get_values().await, &["job 1", "job 2"]);
     }
 
     mod retry {
-        #[tokio::test]
-        #[ignore]
+        use crate::{test_util::wait_for_job_status, Retries};
+
+        use super::*;
+
+        #[tokio::test(start_paused = true)]
         async fn success_after_retry() {
-            todo!();
+            let test = TestEnvironment::new().await;
+
+            let _worker = test.worker().build().await.expect("failed to build worker");
+
+            let (_, job_id) = test
+                .queue
+                .add_job(NewJob {
+                    job_type: "retry".to_string(),
+                    payload: serde_json::to_vec(&2).unwrap(),
+                    retries: Retries {
+                        max_retries: 2,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .await
+                .expect("failed to add job");
+
+            let status = wait_for_job("job to run", &test.queue, job_id).await;
+            assert_eq!(status.run_info.len(), 3);
+            assert!(!status.run_info[0].success);
+            assert!(!status.run_info[1].success);
+            assert!(status.run_info[2].success);
+
+            assert_eq!(status.run_info[0].info.to_string(), "\"fail on try 0\"");
+            assert_eq!(status.run_info[1].info.to_string(), "\"fail on try 1\"");
+            assert_eq!(status.run_info[2].info.to_string(), "\"success on try 2\"");
+
+            // Assert retry time is at least the multiplier time, but less than the additional time
+            // that might be added by the randomization.
+            let first_retry_time = status.run_info[1].start - status.run_info[0].start;
+            event!(Level::INFO, %first_retry_time);
+            assert!(first_retry_time >= Duration::from_secs(20));
+
+            let second_retry_time = status.run_info[2].start - status.run_info[1].start;
+            event!(Level::INFO, %second_retry_time);
+            assert!(second_retry_time >= Duration::from_secs(40));
         }
 
-        #[tokio::test]
-        #[ignore]
+        #[tokio::test(start_paused = true)]
         async fn exceed_max_retries() {
-            todo!();
+            let test = TestEnvironment::new().await;
+
+            let _worker = test.worker().build().await.expect("failed to build worker");
+
+            let (_, job_id) = test
+                .queue
+                .add_job(NewJob {
+                    job_type: "retry".to_string(),
+                    payload: serde_json::to_vec(&3).unwrap(),
+                    retries: Retries {
+                        max_retries: 2,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .await
+                .expect("failed to add job");
+
+            let status = wait_for_job_status("job to run", &test.queue, job_id, "failed").await;
+            assert_eq!(status.run_info.len(), 3);
+            assert!(!status.run_info[0].success);
+            assert!(!status.run_info[1].success);
+            assert!(!status.run_info[2].success);
+
+            assert_eq!(status.run_info[0].info.to_string(), "\"fail on try 0\"");
+            assert_eq!(status.run_info[1].info.to_string(), "\"fail on try 1\"");
+            assert_eq!(status.run_info[2].info.to_string(), "\"fail on try 2\"");
         }
 
         #[tokio::test]
         #[ignore]
-        async fn retry_max_backoff() {
+        async fn backoff_times() {
             todo!();
         }
     }
@@ -341,12 +404,6 @@ mod tests {
     #[ignore]
     async fn clear_jobs() {
         unimplemented!();
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn weighted_jobs() {
-        todo!();
     }
 
     #[tokio::test]
@@ -382,9 +439,48 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn job_priority() {
-        todo!();
+        let test = TestEnvironment::new().await;
+
+        let now = test.time.now();
+
+        // Add two job. The low priority job has an earlier run_at time so it would normally run first,
+        // but the high priority job should actually run first due to running in priority order.
+        let (_, low_prio) = test
+            .queue
+            .add_job(NewJob {
+                job_type: "push_payload".to_string(),
+                payload: serde_json::to_vec("low").unwrap(),
+                priority: Some(1),
+                run_at: Some(now - Duration::from_secs(10)),
+                ..Default::default()
+            })
+            .await
+            .expect("adding low priority job");
+
+        let (_, high_prio) = test
+            .queue
+            .add_job(NewJob {
+                job_type: "push_payload".to_string(),
+                payload: serde_json::to_vec("high").unwrap(),
+                priority: Some(2),
+                run_at: Some(now - Duration::from_secs(5)),
+                ..Default::default()
+            })
+            .await
+            .expect("adding high priority job");
+
+        let _worker = test.worker().build().await.expect("failed to build worker");
+
+        let status_high = wait_for_job("high priority job to run", &test.queue, high_prio).await;
+        let status_low = wait_for_job("low priority job to run", &test.queue, low_prio).await;
+
+        let high_started_at = status_high.started_at.expect("high priority job started");
+        let low_started_at = status_low.started_at.expect("low priority job started");
+        event!(Level::INFO, high_started_at=%high_started_at, low_started_at=%low_started_at, "job start times");
+        assert!(high_started_at <= low_started_at);
+
+        assert_eq!(test.context.get_values().await, vec!["high", "low"]);
     }
 
     #[tokio::test]
@@ -406,6 +502,12 @@ mod tests {
         #[tokio::test]
         #[ignore]
         async fn fetches_batch() {
+            todo!();
+        }
+
+        #[tokio::test]
+        #[ignore]
+        async fn weighted_jobs() {
             todo!();
         }
 

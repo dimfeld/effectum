@@ -30,6 +30,8 @@ pub enum Error {
     PayloadError(serde_json::Error),
     #[error("Timestamp {0} out of range")]
     TimestampOutOfRange(&'static str),
+    #[error("Attempted to finish already-finished job")]
+    JobAlreadyConsumed,
     #[error("Timed out")]
     Timeout,
     #[error("Job expired")]

@@ -12,7 +12,8 @@ use uuid::Uuid;
 
 use crate::job_status::RunInfo;
 use crate::shared_state::SharedState;
-use crate::{Error, Result};
+use crate::worker::log_error;
+use crate::{Error, Result, SmartString};
 
 #[derive(Debug, Clone)]
 pub struct Job(pub Arc<JobData>);
@@ -186,6 +187,7 @@ impl JobData {
         serde_json::from_slice(self.payload.as_slice())
     }
 
+    #[instrument(level = "debug")]
     async fn mark_job_done<T: Serialize + Send + Debug>(
         &self,
         info: T,
@@ -261,9 +263,6 @@ impl JobData {
     /// Mark the job as failed.
     #[instrument]
     pub async fn fail<T: Serialize + Send + Debug>(&self, info: T) -> Result<(), Error> {
-        let mut done = self.done.lock().await;
-        let _chan = done.take().expect("Called fail after job finished");
-        drop(done);
         // Remove task from running jobs, update job info, calculate new retry time, and stick the
         // job back into pending.
         // If there is a checkpointed payload, use that. Otherwise use the original payload from the
@@ -273,12 +272,16 @@ impl JobData {
             return self.mark_job_done(info, false).await;
         }
 
+        let mut done = self.done.lock().await;
+        let _chan = done.take().expect("Called fail after job finished");
+        drop(done);
+
         // Calculate the next run time, given the backoff.
         let now = self.queue.time.now();
-        let next_try_count = self.current_try + 1;
         let run_delta = (self.backoff_initial_interval as f64)
-            * (self.backoff_multiplier).powi(next_try_count)
+            * (self.backoff_multiplier).powi(self.current_try)
             * (1.0 + rand::random::<f64>() * self.backoff_randomization);
+        event!(Level::DEBUG, %run_delta, current_try=%self.current_try);
         let next_run_time = now.unix_timestamp() + (run_delta as i64);
         let job_id = self.job_id;
         let worker_id = self.worker_id;
@@ -322,6 +325,14 @@ impl JobData {
                 Ok(())
             })
             .await?;
+
+        // Make sure that the pending job watcher knows about the rescheduled job.
+        log_error(
+            self.queue
+                .pending_jobs_tx
+                .send((SmartString::from(&self.job_type), next_run_time))
+                .await,
+        );
 
         Ok(())
     }
