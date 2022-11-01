@@ -134,7 +134,7 @@ impl Queue {
         // that we can continue to receive "job finished" notifications. This will probably involve
         // persisting the worker information to the database so we can properly recover it.
 
-        // TODO task to monitor expired jobs
+        // TODO sweeper task for expired jobs that might not have been caught by the normal mechanism
         // TODO task to schedule recurring jobs
         // TODO Optional task to delete old jobs from `done_jobs`
 
@@ -199,7 +199,10 @@ mod tests {
 
     use crate::{
         job_registry::{JobDef, JobRegistry},
-        test_util::{create_test_queue, wait_for, wait_for_job, TestContext, TestEnvironment},
+        test_util::{
+            create_test_queue, wait_for, wait_for_job, wait_for_job_status, TestContext,
+            TestEnvironment,
+        },
         worker::Worker,
         NewJob,
     };
@@ -382,48 +385,172 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    #[ignore]
-    async fn explicit_complete() {
-        todo!();
+    #[tokio::test(start_paused = true)]
+    async fn explicit_finish() {
+        let mut test = TestEnvironment::new().await;
+
+        let explicit_complete_job = JobDef::builder(
+            "explicit_complete",
+            |job, _context: Arc<TestContext>| async move {
+                if job.current_try == 0 {
+                    job.fail("explicit fail").await?;
+                } else {
+                    job.complete("explicit succeed").await?;
+                }
+
+                Ok::<_, crate::Error>("This should not do anything")
+            },
+        )
+        .build();
+
+        test.registry.add(&explicit_complete_job);
+
+        let _worker = test.worker().build().await.expect("failed to build worker");
+
+        let (_, job_id) = test
+            .queue
+            .add_job(NewJob {
+                job_type: "explicit_complete".to_string(),
+                ..Default::default()
+            })
+            .await
+            .expect("failed to add job");
+
+        let status = wait_for_job("job to run", &test.queue, job_id).await;
+
+        assert_eq!(status.run_info.len(), 2);
+        assert!(!status.run_info[0].success);
+        assert!(status.run_info[1].success);
+
+        assert_eq!(status.run_info[0].info.to_string(), "\"explicit fail\"");
+        assert_eq!(status.run_info[1].info.to_string(), "\"explicit succeed\"");
     }
 
     #[tokio::test]
-    #[ignore]
-    async fn explicit_fail() {
-        todo!();
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn remove_jobs() {
-        unimplemented!();
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn clear_jobs() {
-        unimplemented!();
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn recurring_jobs() {
-        unimplemented!();
-    }
-
-    #[tokio::test]
-    #[ignore]
     async fn job_type_subset() {
-        todo!();
+        let test = TestEnvironment::new().await;
+
+        let mut run_jobs = Vec::new();
+        let mut no_run_jobs = Vec::new();
+
+        run_jobs.push(
+            test.queue
+                .add_job(NewJob {
+                    job_type: "counter".to_string(),
+                    ..Default::default()
+                })
+                .await
+                .expect("failed to add job")
+                .1,
+        );
+        run_jobs.push(
+            test.queue
+                .add_job(NewJob {
+                    job_type: "push_payload".to_string(),
+                    payload: serde_json::to_vec(&"test").unwrap(),
+                    ..Default::default()
+                })
+                .await
+                .expect("failed to add job")
+                .1,
+        );
+
+        no_run_jobs.push(
+            test.queue
+                .add_job(NewJob {
+                    job_type: "sleep".to_string(),
+                    payload: serde_json::to_vec(&"test").unwrap(),
+                    ..Default::default()
+                })
+                .await
+                .expect("failed to add job")
+                .1,
+        );
+
+        let _worker = test
+            .worker()
+            .job_types(&["counter", "push_payload"])
+            .build()
+            .await
+            .expect("failed to build worker");
+
+        run_jobs.push(
+            test.queue
+                .add_job(NewJob {
+                    job_type: "counter".to_string(),
+                    ..Default::default()
+                })
+                .await
+                .expect("failed to add job")
+                .1,
+        );
+        run_jobs.push(
+            test.queue
+                .add_job(NewJob {
+                    job_type: "push_payload".to_string(),
+                    payload: serde_json::to_vec(&"test").unwrap(),
+                    ..Default::default()
+                })
+                .await
+                .expect("failed to add job")
+                .1,
+        );
+
+        no_run_jobs.push(
+            test.queue
+                .add_job(NewJob {
+                    job_type: "sleep".to_string(),
+                    payload: serde_json::to_vec(&"test").unwrap(),
+                    ..Default::default()
+                })
+                .await
+                .expect("failed to add job")
+                .1,
+        );
+
+        for job_id in run_jobs {
+            event!(Level::INFO, %job_id, "checking job that should run");
+            let status = wait_for_job("job to run", &test.queue, job_id).await;
+            assert!(status.run_info[0].success);
+        }
+
+        for job_id in no_run_jobs {
+            event!(Level::INFO, %job_id, "checking job that should not run");
+            let status = wait_for_job_status("job to run", &test.queue, job_id, "pending").await;
+            assert_eq!(status.run_info.len(), 0);
+        }
     }
 
-    #[tokio::test]
-    #[ignore]
+    #[tokio::test(start_paused = true)]
     async fn job_timeout() {
         // TODO Need to track by a specific job_run_id, not just the worker id, since
         // the next run of the job could assign it to the same worker again.
-        todo!();
+        let test = TestEnvironment::new().await;
+        let _worker = test.worker().build().await.expect("failed to build worker");
+        let (_, job_id) = test
+            .queue
+            .add_job(NewJob {
+                job_type: "sleep".to_string(),
+                payload: serde_json::to_vec(&10000).unwrap(),
+                timeout: time::Duration::milliseconds(5000),
+                retries: crate::Retries {
+                    max_retries: 2,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .await
+            .expect("failed to add job");
+
+        let status = wait_for_job_status("job to fail", &test.queue, job_id, "failed").await;
+
+        assert_eq!(status.run_info.len(), 3);
+        assert!(!status.run_info[0].success);
+        assert!(!status.run_info[1].success);
+        assert!(!status.run_info[2].success);
+        assert_eq!(status.run_info[0].info.to_string(), "\"Job expired\"");
+        assert_eq!(status.run_info[1].info.to_string(), "\"Job expired\"");
+        assert_eq!(status.run_info[2].info.to_string(), "\"Job expired\"");
     }
 
     #[tokio::test]
@@ -522,5 +649,25 @@ mod tests {
     #[ignore]
     async fn shutdown() {
         todo!();
+    }
+
+    mod unimplemented {
+        #[tokio::test]
+        #[ignore]
+        async fn remove_jobs() {
+            unimplemented!();
+        }
+
+        #[tokio::test]
+        #[ignore]
+        async fn clear_jobs() {
+            unimplemented!();
+        }
+
+        #[tokio::test]
+        #[ignore]
+        async fn recurring_jobs() {
+            unimplemented!();
+        }
     }
 }

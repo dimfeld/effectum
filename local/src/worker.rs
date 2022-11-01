@@ -99,7 +99,7 @@ where
         }
     }
 
-    pub fn job_types(&mut self, job_types: &[impl AsRef<str>]) -> &mut Self {
+    pub fn job_types(mut self, job_types: &[impl AsRef<str>]) -> Self {
         self.jobs = job_types
             .iter()
             .map(|s| {
@@ -115,13 +115,13 @@ where
         self
     }
 
-    pub fn min_concurrency(&mut self, min_concurrency: u16) -> &mut Self {
+    pub fn min_concurrency(mut self, min_concurrency: u16) -> Self {
         assert!(min_concurrency > 0);
         self.min_concurrency = Some(min_concurrency);
         self
     }
 
-    pub fn max_concurrency(&mut self, max_concurrency: u16) -> &mut Self {
+    pub fn max_concurrency(mut self, max_concurrency: u16) -> Self {
         assert!(max_concurrency > 0);
         self.max_concurrency = Some(max_concurrency);
         self
@@ -396,7 +396,7 @@ where
                         running_count =
                             running_jobs.count.fetch_add(weight, Ordering::Relaxed) + weight;
 
-                        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+                        let (done_tx, done_rx) = tokio::sync::watch::channel(false);
                         let job = Job(Arc::new(JobData {
                             id: job.external_id,
                             job_id: job.job_id,
@@ -435,7 +435,7 @@ where
     #[instrument(level="debug", skip(self, done), fields(worker_id = %self.listener.id))]
     async fn run_job(
         &self,
-        (job, mut done): (Job, tokio::sync::oneshot::Receiver<()>),
+        (job, mut done): (Job, tokio::sync::watch::Receiver<bool>),
     ) -> Result<()> {
         let job_def = self
             .job_defs
@@ -451,26 +451,35 @@ where
         (job_def.runner)(job.clone(), self.context.clone());
 
         tokio::spawn(async move {
-            if autoheartbeat && job.heartbeat_increment > 0 {
-                event!(Level::DEBUG, ?job, "Starting autoheartbeat");
-                loop {
-                    tokio::select! {
-                        _ = wait_for_next_autoheartbeat(&time, job.heartbeat_increment, &job.expires) => {
-                            let new_time =
-                                crate::job::send_heartbeat(job.job_id, worker_id, job.heartbeat_increment, &job.queue).await;
+            let use_autohearbeat = autoheartbeat && job.heartbeat_increment > 0;
+            event!(Level::DEBUG, ?job, "Starting job monitor task");
+            loop {
+                let expires = job.expires.load(Ordering::Relaxed);
+                let expires_instant = time.instant_for_timestamp(expires);
 
-                            // TODO log error
-                            if let Ok(new_time) = new_time {
-                                job.expires.store(new_time.unix_timestamp(), Ordering::Relaxed);
-                            }
+                tokio::select! {
+                    _ = wait_for_next_autoheartbeat(&time, expires, job.heartbeat_increment), if use_autohearbeat => {
+                        let new_time =
+                            crate::job::send_heartbeat(job.job_id, worker_id, job.heartbeat_increment, &job.queue).await;
+
+                        match new_time {
+                            Ok(new_time) => job.expires.store(new_time.unix_timestamp(), Ordering::Relaxed),
+                            Err(e) => event!(Level::ERROR, ?e),
                         }
-                        _ = &mut done => {
+                    }
+                    _ = tokio::time::sleep_until(expires_instant) => {
+                        let now_expires = job.expires.load(Ordering::Relaxed);
+                        if now_expires == expires {
+                            if !job.is_done().await {
+                                log_error(job.fail("Job expired").await);
+                            }
                             break;
                         }
                     }
+                    _ = done.changed() => {
+                        break;
+                    }
                 }
-            } else {
-                done.await.ok();
             }
 
             // Do this in a separate task from the job runner so that even if something goes horribly wrong
@@ -483,10 +492,10 @@ where
     }
 }
 
-async fn wait_for_next_autoheartbeat(time: &Time, heartbeat_increment: i32, expires: &AtomicI64) {
+async fn wait_for_next_autoheartbeat(time: &Time, expires: i64, heartbeat_increment: i32) {
     let now = time.now();
     let before = (heartbeat_increment.min(30) / 2) as i64;
-    let next_heartbeat_time = expires.load(Ordering::Relaxed) - before;
+    let next_heartbeat_time = expires - before;
 
     let time_from_now = next_heartbeat_time - now.unix_timestamp();
     let instant = Instant::now() + std::time::Duration::from_secs(time_from_now.max(0) as u64);

@@ -38,7 +38,12 @@ where
     }
 
     pub fn add(&mut self, job: &JobDef<CONTEXT>) {
-        self.jobs.insert(job.name.clone(), job.clone());
+        self.jobs
+            .entry(job.name.clone())
+            .and_modify(|_| {
+                panic!("Job {} already exists", job.name);
+            })
+            .or_insert_with(|| job.clone());
     }
 }
 
@@ -152,5 +157,26 @@ where
 
     pub fn build(self) -> JobDef<CONTEXT> {
         self.def
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::test_util::{TestContext, TestEnvironment};
+
+    use super::JobDef;
+
+    #[tokio::test]
+    #[should_panic]
+    async fn disallow_adding_same_job_type_twice() {
+        let mut test = TestEnvironment::new().await;
+
+        let job = JobDef::builder("counter", |_, _context: Arc<TestContext>| async {
+            Ok::<_, String>(())
+        })
+        .build();
+        test.registry.add(&job);
     }
 }

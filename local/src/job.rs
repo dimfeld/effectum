@@ -50,7 +50,7 @@ pub struct JobData {
     pub current_try: i32,
     pub max_retries: i32,
 
-    pub(crate) done: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    pub(crate) done: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
     pub(crate) queue: SharedState,
 }
 
