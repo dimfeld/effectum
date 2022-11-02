@@ -233,6 +233,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_multiple_jobs() {
+        let test = TestEnvironment::new().await;
+
+        let _worker = test.worker().build().await.expect("failed to build worker");
+
+        let ids = test
+            .queue
+            .add_jobs(vec![
+                NewJob {
+                    job_type: "counter".to_string(),
+                    ..Default::default()
+                },
+                NewJob {
+                    job_type: "counter".to_string(),
+                    ..Default::default()
+                },
+                NewJob {
+                    job_type: "counter".to_string(),
+                    ..Default::default()
+                },
+            ])
+            .await
+            .expect("failed to add job");
+
+        for (_, job_id) in ids {
+            wait_for_job("job to run", &test.queue, job_id).await;
+        }
+    }
+
+    #[tokio::test]
     async fn worker_gets_pending_jobs_when_starting() {
         let test = TestEnvironment::new().await;
 
@@ -283,6 +313,60 @@ mod tests {
             .await
             .expect("failed to add job 1");
         event!(Level::INFO, run_at=%run_at1, id=%job_id, "scheduled job 1");
+
+        tokio::time::sleep_until(test.time.instant_for_timestamp(run_at1.unix_timestamp())).await;
+        let status1 = wait_for_job("job 1 to run", &test.queue, job_id).await;
+        event!(Level::INFO, ?status1);
+        let started_at1 = status1.started_at.expect("started_at is set on job 1");
+        event!(Level::INFO, orig_run_at=%status1.orig_run_at, run_at=%run_at1, "job 1");
+        assert!(status1.orig_run_at >= run_at1);
+        assert!(started_at1 >= run_at1);
+
+        tokio::time::sleep_until(test.time.instant_for_timestamp(run_at2.unix_timestamp())).await;
+        let status2 = wait_for_job("job 2 to run", &test.queue, job_id2).await;
+        event!(Level::INFO, ?status2);
+        let started_at2 = status2.started_at.expect("started_at is set on job 2");
+        event!(Level::INFO, orig_run_at=%status2.orig_run_at, run_at=%run_at2, "job 2");
+        assert!(status2.orig_run_at >= run_at2);
+        assert!(started_at2 >= run_at2);
+
+        assert_eq!(test.context.get_values().await, &["job 1", "job 2"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn add_multiple_future_jobs() {
+        let test = TestEnvironment::new().await;
+
+        let _worker = test.worker().build().await.expect("failed to build worker");
+
+        let run_at1 = test.time.now().replace_nanosecond(0).unwrap() + Duration::from_secs(10);
+        let run_at2 = run_at1 + Duration::from_secs(10);
+
+        // Schedule job 2 first, to ensure that it's actually sorting by run_at
+        let ids = test
+            .queue
+            .add_jobs(vec![
+                NewJob {
+                    job_type: "push_payload".to_string(),
+                    payload: serde_json::to_vec("job 2").unwrap(),
+                    run_at: Some(run_at2),
+                    ..Default::default()
+                },
+                NewJob {
+                    job_type: "push_payload".to_string(),
+                    payload: serde_json::to_vec("job 1").unwrap(),
+                    run_at: Some(run_at1),
+                    ..Default::default()
+                },
+            ])
+            .await
+            .expect("Failed to add jobs");
+
+        let job_id2 = ids[0].1;
+        let job_id = ids[1].1;
+
+        event!(Level::INFO, run_at=%run_at1, id=%job_id, "scheduled job 1");
+        event!(Level::INFO, run_at=%run_at2, id=%job_id2, "scheduled job 2");
 
         tokio::time::sleep_until(test.time.instant_for_timestamp(run_at1.unix_timestamp())).await;
         let status1 = wait_for_job("job 1 to run", &test.queue, job_id).await;
@@ -435,26 +519,21 @@ mod tests {
         let mut run_jobs = Vec::new();
         let mut no_run_jobs = Vec::new();
 
-        run_jobs.push(
+        run_jobs.extend(
             test.queue
-                .add_job(NewJob {
-                    job_type: "counter".to_string(),
-                    ..Default::default()
-                })
+                .add_jobs(vec![
+                    NewJob {
+                        job_type: "counter".to_string(),
+                        ..Default::default()
+                    },
+                    NewJob {
+                        job_type: "push_payload".to_string(),
+                        payload: serde_json::to_vec(&"test").unwrap(),
+                        ..Default::default()
+                    },
+                ])
                 .await
-                .expect("failed to add job")
-                .1,
-        );
-        run_jobs.push(
-            test.queue
-                .add_job(NewJob {
-                    job_type: "push_payload".to_string(),
-                    payload: serde_json::to_vec(&"test").unwrap(),
-                    ..Default::default()
-                })
-                .await
-                .expect("failed to add job")
-                .1,
+                .expect("failed to add jobs"),
         );
 
         no_run_jobs.push(
@@ -476,26 +555,21 @@ mod tests {
             .await
             .expect("failed to build worker");
 
-        run_jobs.push(
+        run_jobs.extend(
             test.queue
-                .add_job(NewJob {
-                    job_type: "counter".to_string(),
-                    ..Default::default()
-                })
+                .add_jobs(vec![
+                    NewJob {
+                        job_type: "counter".to_string(),
+                        ..Default::default()
+                    },
+                    NewJob {
+                        job_type: "push_payload".to_string(),
+                        payload: serde_json::to_vec(&"test").unwrap(),
+                        ..Default::default()
+                    },
+                ])
                 .await
-                .expect("failed to add job")
-                .1,
-        );
-        run_jobs.push(
-            test.queue
-                .add_job(NewJob {
-                    job_type: "push_payload".to_string(),
-                    payload: serde_json::to_vec(&"test").unwrap(),
-                    ..Default::default()
-                })
-                .await
-                .expect("failed to add job")
-                .1,
+                .expect("Failed to add jobs"),
         );
 
         no_run_jobs.push(
@@ -510,7 +584,7 @@ mod tests {
                 .1,
         );
 
-        for job_id in run_jobs {
+        for (_, job_id) in run_jobs {
             event!(Level::INFO, %job_id, "checking job that should run");
             let status = wait_for_job("job to run", &test.queue, job_id).await;
             assert!(status.run_info[0].success);
@@ -805,10 +879,59 @@ mod tests {
             assert_eq!(test.context.max_count().await, 3);
         }
 
-        #[tokio::test]
-        #[ignore]
+        #[tokio::test(start_paused = true)]
         async fn fetches_again_at_min_concurrency() {
-            todo!();
+            let test = TestEnvironment::new().await;
+
+            let mut jobs = Vec::new();
+            for i in 0..20 {
+                let time = (i + 1) * 1000;
+                let job_id = test
+                    .queue
+                    .add_job(NewJob {
+                        job_type: "sleep".to_string(),
+                        payload: serde_json::to_vec(&time).unwrap(),
+                        timeout: time::Duration::minutes(20),
+                        ..Default::default()
+                    })
+                    .await
+                    .expect("Adding job")
+                    .1;
+                jobs.push(job_id);
+            }
+
+            let _worker = test
+                .worker()
+                .min_concurrency(5)
+                .max_concurrency(10)
+                .build()
+                .await
+                .expect("failed to build worker");
+
+            let mut statuses = Vec::new();
+            for job_id in jobs {
+                statuses.push(wait_for_job("job to succeed", &test.queue, job_id).await);
+            }
+
+            // First 10 jobs should all start at same time.
+            let batch1_time = statuses[0].started_at.unwrap();
+            for i in 1..10 {
+                assert_eq!(batch1_time, statuses[i].started_at.unwrap());
+            }
+
+            // Next 5 jobs should start together
+            let batch2_time = statuses[10].started_at.unwrap();
+            assert!(batch2_time > batch1_time);
+            for i in 11..15 {
+                assert_eq!(batch2_time, statuses[i].started_at.unwrap());
+            }
+
+            // Final 5 jobs should start together
+            let batch3_time = statuses[15].started_at.unwrap();
+            assert!(batch3_time > batch2_time);
+            for i in 16..20 {
+                assert_eq!(batch3_time, statuses[i].started_at.unwrap());
+            }
         }
     }
 
