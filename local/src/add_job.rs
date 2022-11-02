@@ -17,14 +17,14 @@ const INSERT_QUERY: &str = r##"
 "##;
 
 impl Queue {
-    fn execute_add_job_stmt(tx: &Transaction, stmt: &mut Statement, now: OffsetDateTime, run_time: OffsetDateTime, job_config: &NewJob) -> Result<(i64, Uuid)> {
+    fn execute_add_job_stmt(tx: &Transaction, stmt: &mut Statement, now: OffsetDateTime, run_time: OffsetDateTime, job_config: &NewJob, from_recurring_job: Option<i64>) -> Result<(i64, Uuid)> {
         let external_id: Uuid = ulid::Ulid::new().into();
         stmt.execute(named_params! {
             "$external_id": &external_id,
             "$job_type": job_config.job_type,
             "$priority": job_config.priority,
             "$weight": job_config.weight,
-            "$from_recurring_job": job_config.recurring_job_id,
+            "$from_recurring_job": from_recurring_job,
             "$run_at": run_time.unix_timestamp(),
             "$payload": job_config.payload.as_slice(),
             "$max_retries": job_config.retries.max_retries,
@@ -49,7 +49,7 @@ impl Queue {
             let ids = {
                 let mut add_job_stmt = tx.prepare_cached(INSERT_QUERY)?;
 
-                Self::execute_add_job_stmt(&tx, &mut add_job_stmt, now, run_time, &job_config)?
+                Self::execute_add_job_stmt(&tx, &mut add_job_stmt, now, run_time, &job_config, None)?
             };
 
             tx.commit()?;
@@ -89,7 +89,7 @@ impl Queue {
 
                 for job_config in jobs {
                     let run_time = job_config.run_at.unwrap_or(now);
-                    let job_ids = Self::execute_add_job_stmt(&tx, &mut stmt, now, run_time, &job_config)?;
+                    let job_ids = Self::execute_add_job_stmt(&tx, &mut stmt, now, run_time, &job_config, None)?;
 
                     ids.push(job_ids);
 

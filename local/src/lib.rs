@@ -48,16 +48,15 @@ impl Default for Retries {
 
 #[derive(Debug, Clone)]
 pub struct NewJob {
-    job_type: String,
-    priority: i32,
-    weight: u32,
+    pub job_type: String,
+    pub priority: i32,
+    pub weight: u32,
     /// When to run the job. `None` means to run it right away.
-    run_at: Option<time::OffsetDateTime>,
-    payload: Vec<u8>,
-    retries: Retries,
-    timeout: time::Duration,
-    heartbeat_increment: time::Duration,
-    recurring_job_id: Option<i64>,
+    pub run_at: Option<time::OffsetDateTime>,
+    pub payload: Vec<u8>,
+    pub retries: Retries,
+    pub timeout: time::Duration,
+    pub heartbeat_increment: time::Duration,
 }
 
 impl Default for NewJob {
@@ -71,7 +70,6 @@ impl Default for NewJob {
             retries: Default::default(),
             timeout: Duration::minutes(5),
             heartbeat_increment: Duration::seconds(120),
-            recurring_job_id: Default::default(),
         }
     }
 }
@@ -880,6 +878,7 @@ mod tests {
         }
 
         #[tokio::test(start_paused = true)]
+        #[ignore = "Reenable once https://github.com/tokio-rs/tokio/pull/5115 is merged."]
         async fn fetches_again_at_min_concurrency() {
             let test = TestEnvironment::new().await;
 
@@ -943,19 +942,19 @@ mod tests {
 
     mod unimplemented {
         #[tokio::test]
-        #[ignore]
+        #[ignore = "not implemented yet"]
         async fn remove_jobs() {
             unimplemented!();
         }
 
         #[tokio::test]
-        #[ignore]
+        #[ignore = "not implemented yet"]
         async fn clear_jobs() {
             unimplemented!();
         }
 
         #[tokio::test]
-        #[ignore]
+        #[ignore = "not implemented yet"]
         async fn recurring_jobs() {
             unimplemented!();
         }
