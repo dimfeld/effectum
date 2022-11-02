@@ -14,16 +14,17 @@ impl Queue {
         let task_id = self.state.write_db(move |db| {
             let tx = db.transaction()?;
 
-            let priority = job_config.priority.unwrap_or(0);
+            let priority = job_config.priority;
+            let weight = job_config.weight;
 
             let task_id = {
                 let mut add_job_stmt = tx.prepare_cached(r##"
                     INSERT INTO active_jobs
-                    (external_id, job_type, priority, from_recurring_job, orig_run_at, run_at, payload,
+                    (external_id, job_type, priority, weight, from_recurring_job, orig_run_at, run_at, payload,
                         current_try, max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
                         added_at, default_timeout, heartbeat_increment, run_info)
                     VALUES
-                    ($external_id, $job_type, $priority, $from_recurring_job, $run_at, $run_at, $payload,
+                    ($external_id, $job_type, $priority, $weight, $from_recurring_job, $run_at, $run_at, $payload,
                         0, $max_retries, $backoff_multiplier, $backoff_randomization, $backoff_initial_interval,
                         $added_at, $default_timeout, $heartbeat_increment, '[]')
                 "##)?;
@@ -31,6 +32,7 @@ impl Queue {
                     "$external_id": &external_id,
                     "$job_type": job_config.job_type,
                     "$priority": priority,
+                    "$weight": weight,
                     "$from_recurring_job": job_config.recurring_job_id,
                     "$run_at": run_time.unix_timestamp(),
                     "$payload": job_config.payload.as_slice(),
@@ -80,7 +82,7 @@ mod tests {
 
         let job = NewJob {
             job_type: "a_job".to_string(),
-            priority: Some(1),
+            priority: 1,
             ..Default::default()
         };
 

@@ -25,6 +25,7 @@ pub struct JobStatus {
     pub job_type: String,
     pub status: String,
     pub priority: i32,
+    pub weight: u16,
     pub orig_run_at: OffsetDateTime,
     pub payload: Vec<u8>,
     pub max_retries: i32,
@@ -57,14 +58,14 @@ impl Queue {
             active_worker_id IS NOT NULL THEN 'running'
             ELSE 'pending'
         END AS status,
-        priority, orig_run_at, payload,
+        priority, weight, orig_run_at, payload,
         max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
         added_at, started_at, NULL as finished_at, expires_at, run_info
     FROM active_jobs
     WHERE external_id=$1
     UNION ALL
     SELECT job_type, status,
-        priority, orig_run_at, payload,
+        priority, weight, orig_run_at, payload,
         max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
         added_at, started_at, finished_at, NULL as expires_at, run_info
     FROM done_jobs
@@ -75,7 +76,7 @@ impl Queue {
 
                 let mut rows = stmt.query_and_then([external_id], |row| {
                     let started_at = row
-                        .get_ref(10)?
+                        .get_ref(11)?
                         .as_i64_or_null()
                         .map_err(|e| Error::FromSql(e, "started_at"))?
                         .map(|i| {
@@ -85,7 +86,7 @@ impl Queue {
                         .transpose()?;
 
                     let finished_at = row
-                        .get_ref(11)?
+                        .get_ref(12)?
                         .as_i64_or_null()
                         .map_err(|e| Error::FromSql(e, "finished_at"))?
                         .map(|i| {
@@ -95,7 +96,7 @@ impl Queue {
                         .transpose()?;
 
                     let expires_at = row
-                        .get_ref(12)?
+                        .get_ref(13)?
                         .as_i64_or_null()
                         .map_err(|e| Error::FromSql(e, "expires_at"))?
                         .map(|i| {
@@ -105,7 +106,7 @@ impl Queue {
                         .transpose()?;
 
                     let run_info_str = row
-                        .get_ref(13)?
+                        .get_ref(14)?
                         .as_str_or_null()
                         .map_err(|e| Error::FromSql(e, "run_info"))?;
                     let run_info: SmallVec<[RunInfo<Box<RawValue>>; 4]> = match run_info_str {
@@ -120,14 +121,15 @@ impl Queue {
                         job_type: row.get(0).map_err(|e| Error::ColumnType(e, "job_type"))?,
                         status: row.get(1)?,
                         priority: row.get(2)?,
-                        orig_run_at: OffsetDateTime::from_unix_timestamp(row.get(3)?)
+                        weight: row.get(3)?,
+                        orig_run_at: OffsetDateTime::from_unix_timestamp(row.get(4)?)
                             .map_err(|_| Error::TimestampOutOfRange("orig_run_at"))?,
-                        payload: row.get(4)?,
-                        max_retries: row.get(5)?,
-                        backoff_multiplier: row.get(6)?,
-                        backoff_randomization: row.get(7)?,
-                        backoff_initial_interval: Duration::seconds(row.get(8)?),
-                        added_at: OffsetDateTime::from_unix_timestamp(row.get(9)?)
+                        payload: row.get(5)?,
+                        max_retries: row.get(6)?,
+                        backoff_multiplier: row.get(7)?,
+                        backoff_randomization: row.get(8)?,
+                        backoff_initial_interval: Duration::seconds(row.get(9)?),
+                        added_at: OffsetDateTime::from_unix_timestamp(row.get(10)?)
                             .map_err(|_| Error::TimestampOutOfRange("added_at"))?,
                         started_at,
                         finished_at,

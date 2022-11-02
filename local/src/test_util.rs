@@ -23,6 +23,7 @@ use crate::{
 #[derive(Debug)]
 pub struct TestContext {
     pub counter: AtomicUsize,
+    pub max_count: Mutex<(usize, usize)>,
     pub value: Mutex<Vec<String>>,
     pub watch_rx: tokio::sync::watch::Receiver<usize>,
     pub watch_tx: tokio::sync::watch::Sender<usize>,
@@ -33,10 +34,27 @@ impl TestContext {
         let (watch_tx, watch_rx) = tokio::sync::watch::channel(0);
         Arc::new(TestContext {
             counter: AtomicUsize::new(0),
+            max_count: Mutex::new((0, 0)),
             value: Mutex::new(Vec::new()),
             watch_rx,
             watch_tx,
         })
+    }
+
+    pub async fn inc_max_count(&self) {
+        let mut count = self.max_count.lock().await;
+        count.0 += 1;
+        count.1 = std::cmp::max(count.0, count.1);
+    }
+
+    pub async fn dec_max_count(&self) {
+        let mut count = self.max_count.lock().await;
+        count.0 -= 1;
+    }
+
+    pub async fn max_count(&self) -> usize {
+        let count = self.max_count.lock().await;
+        count.1
     }
 
     pub async fn push_str(&self, s: impl ToString) {
@@ -130,12 +148,22 @@ impl TestEnvironment {
         })
         .build();
 
+        let max_count_task =
+            JobDef::builder("max_count", |_job, context: Arc<TestContext>| async move {
+                context.inc_max_count().await;
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+                context.dec_max_count().await;
+                Ok::<_, String>(())
+            })
+            .build();
+
         let registry = JobRegistry::new(&[
             count_task,
             sleep_task,
             push_payload,
             wait_for_watch_task,
             retry_task,
+            max_count_task,
         ]);
 
         TestEnvironment {
@@ -151,7 +179,7 @@ impl TestEnvironment {
     }
 }
 
-// Keep this one as a sepatate function to make sure that both full functions and closures can be
+// Keep this one as a seperate function to make sure that both full functions and closures can be
 // used as task runners.
 async fn sleep_task(job: Job, _context: Arc<TestContext>) -> Result<(), String> {
     let duration = job.json_payload::<u64>().unwrap_or(5000);

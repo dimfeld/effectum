@@ -49,7 +49,8 @@ impl Default for Retries {
 #[derive(Debug, Clone)]
 pub struct NewJob {
     job_type: String,
-    priority: Option<i64>,
+    priority: i32,
+    weight: u32,
     /// When to run the job. `None` means to run it right away.
     run_at: Option<time::OffsetDateTime>,
     payload: Vec<u8>,
@@ -63,7 +64,8 @@ impl Default for NewJob {
     fn default() -> Self {
         Self {
             job_type: Default::default(),
-            priority: Default::default(),
+            priority: 0,
+            weight: 1,
             run_at: Default::default(),
             payload: Default::default(),
             retries: Default::default(),
@@ -635,7 +637,7 @@ mod tests {
             .add_job(NewJob {
                 job_type: "push_payload".to_string(),
                 payload: serde_json::to_vec("low").unwrap(),
-                priority: Some(1),
+                priority: 1,
                 run_at: Some(now - Duration::from_secs(10)),
                 ..Default::default()
             })
@@ -647,7 +649,7 @@ mod tests {
             .add_job(NewJob {
                 job_type: "push_payload".to_string(),
                 payload: serde_json::to_vec("high").unwrap(),
-                priority: Some(2),
+                priority: 2,
                 run_at: Some(now - Duration::from_secs(5)),
                 ..Default::default()
             })
@@ -729,10 +731,38 @@ mod tests {
     }
 
     mod concurrency {
-        #[tokio::test]
-        #[ignore]
+        use super::*;
+
+        #[tokio::test(start_paused = true)]
         async fn limit_to_max_concurrency() {
-            todo!();
+            let test = TestEnvironment::new().await;
+
+            let mut jobs = Vec::new();
+            for _ in 0..10 {
+                let job_id = test
+                    .queue
+                    .add_job(NewJob {
+                        job_type: "max_count".to_string(),
+                        ..Default::default()
+                    })
+                    .await
+                    .expect("Adding job")
+                    .1;
+                jobs.push(job_id);
+            }
+
+            let _worker = test
+                .worker()
+                .max_concurrency(5)
+                .build()
+                .await
+                .expect("failed to build worker");
+
+            for job_id in jobs {
+                wait_for_job("job to succeed", &test.queue, job_id).await;
+            }
+
+            assert_eq!(test.context.max_count().await, 5);
         }
 
         #[tokio::test]
@@ -741,10 +771,38 @@ mod tests {
             todo!();
         }
 
-        #[tokio::test]
-        #[ignore]
+        #[tokio::test(start_paused = true)]
         async fn weighted_jobs() {
-            todo!();
+            let test = TestEnvironment::new().await;
+
+            let mut jobs = Vec::new();
+            for _ in 0..10 {
+                let job_id = test
+                    .queue
+                    .add_job(NewJob {
+                        job_type: "max_count".to_string(),
+                        weight: 3,
+                        ..Default::default()
+                    })
+                    .await
+                    .expect("Adding job")
+                    .1;
+                jobs.push(job_id);
+            }
+
+            let _worker = test
+                .worker()
+                .max_concurrency(10)
+                .build()
+                .await
+                .expect("failed to build worker");
+
+            for job_id in jobs {
+                wait_for_job("job to succeed", &test.queue, job_id).await;
+            }
+
+            // With a weight of 3, there should be at most three jobs (10 / 3) running at once.
+            assert_eq!(test.context.max_count().await, 3);
         }
 
         #[tokio::test]

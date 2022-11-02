@@ -77,10 +77,10 @@ where
     /// Limit the job types this worker will run. Defaults to all job types in the registry.
     jobs: Vec<SmartString>,
     /// Fetch new jobs when the number of running jobs drops to this number. Defaults to
-    /// max_concurrency / 2.
+    /// the same as max_concurrency.
     min_concurrency: Option<u16>,
-    /// The maximum number of jobs that can be run concurrently.
-    /// Defaults to the highest weight of any job in the registry, accounting for `jobs` if set.
+    /// The maximum number of jobs that can be run concurrently. Defaults to 1, but you will
+    /// usually want to set this to a higher number.
     max_concurrency: Option<u16>,
 }
 
@@ -144,18 +144,8 @@ where
             })
             .collect();
 
-        let jobs_max_concurrency = job_list
-            .iter()
-            .map(|job| self.registry.jobs.get(job).map(|d| d.weight).unwrap_or(1))
-            .max()
-            .unwrap_or(1);
-
-        let max_concurrency = self
-            .max_concurrency
-            .unwrap_or(jobs_max_concurrency)
-            .max(jobs_max_concurrency);
-
-        let min_concurrency = self.min_concurrency.unwrap_or(max_concurrency / 2).max(1);
+        let max_concurrency = self.max_concurrency.unwrap_or(1).max(1);
+        let min_concurrency = self.min_concurrency.unwrap_or(max_concurrency).max(1);
 
         event!(
             Level::INFO,
@@ -297,7 +287,7 @@ where
 
                 {
                     let mut stmt = tx.prepare_cached(
-                        r##"SELECT job_id, external_id, priority, job_type, current_try,
+                        r##"SELECT job_id, external_id, priority, weight, job_type, current_try,
                             COALESCE(checkpointed_payload, payload) as payload,
                             default_timeout,
                             heartbeat_increment,
@@ -316,6 +306,7 @@ where
                         job_id: i64,
                         external_id: Uuid,
                         priority: i32,
+                        weight: u16,
                         job_type: String,
                         current_try: i32,
                         payload: Option<Vec<u8>>,
@@ -337,19 +328,21 @@ where
                             let job_id: i64 = row.get(0)?;
                             let external_id: Uuid = row.get(1)?;
                             let priority: i32 = row.get(2)?;
-                            let job_type: String = row.get(3)?;
-                            let current_try: i32 = row.get(4)?;
-                            let payload: Option<Vec<u8>> = row.get(5)?;
-                            let default_timeout: i32 = row.get(6)?;
-                            let heartbeat_increment: i32 = row.get(7)?;
-                            let backoff_multiplier: f64 = row.get(8)?;
-                            let backoff_randomization: f64 = row.get(9)?;
-                            let backoff_initial_interval: i32 = row.get(10)?;
-                            let max_retries: i32 = row.get(11)?;
+                            let weight: u16 = row.get(3)?;
+                            let job_type: String = row.get(4)?;
+                            let current_try: i32 = row.get(5)?;
+                            let payload: Option<Vec<u8>> = row.get(6)?;
+                            let default_timeout: i32 = row.get(7)?;
+                            let heartbeat_increment: i32 = row.get(8)?;
+                            let backoff_multiplier: f64 = row.get(9)?;
+                            let backoff_randomization: f64 = row.get(10)?;
+                            let backoff_initial_interval: i32 = row.get(11)?;
+                            let max_retries: i32 = row.get(12)?;
 
                             Ok(JobResult {
                                 job_id,
                                 priority,
+                                weight,
                                 job_type,
                                 current_try,
                                 payload,
@@ -373,10 +366,7 @@ where
                     let mut running_count = running_count;
                     for job in jobs {
                         let job = job?;
-                        let weight = job_defs
-                            .get(job.job_type.as_str())
-                            .map(|j| j.weight)
-                            .unwrap_or(1);
+                        let weight = job.weight;
 
                         event!(Level::DEBUG, running_count, weight, max_concurrency);
 
@@ -405,6 +395,7 @@ where
                             job_type: job.job_type,
                             payload: job.payload.unwrap_or_default(),
                             priority: job.priority,
+                            weight,
                             start_time: now,
                             current_try: job.current_try,
                             backoff_multiplier: job.backoff_multiplier,
@@ -443,7 +434,6 @@ where
             .expect("Got job for unsupported type");
 
         let worker_id = self.listener.id;
-        let weight = job_def.weight;
         let running = self.running_jobs.clone();
         let autoheartbeat = job_def.autoheartbeat;
         let time = job.queue.time.clone();
@@ -486,7 +476,7 @@ where
 
             // Do this in a separate task from the job runner so that even if something goes horribly wrong
             // we'll still be able to update the internal counts.
-            running.count.fetch_sub(weight, Ordering::Relaxed);
+            running.count.fetch_sub(job.weight, Ordering::Relaxed);
             running.job_finished.notify_one();
         });
 

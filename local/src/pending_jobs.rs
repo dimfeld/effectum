@@ -114,7 +114,6 @@ async fn pending_jobs_task(
         tokio::select! {
             _ = tokio::time::sleep_until(queue.time.instant_for_timestamp(next_time)), if next_time > 0 =>{
                 let now = queue.time.now().unix_timestamp();
-                let workers = queue.workers.read().await;
 
                 let job_types = next_times
                     .iter()
@@ -122,11 +121,13 @@ async fn pending_jobs_task(
                     .map(|(job_type, _)| job_type.clone())
                     .collect::<Vec<_>>();
 
+                let workers = queue.workers.read().await;
                 for job_type in &job_types {
                     event!(Level::DEBUG, %job_type, "Notifying pending jobs");
                     next_times.remove(job_type);
                     workers.new_job_available(job_type.as_str());
                 }
+                drop(workers);
 
                 let new_next_times = get_next_times(&queue, now, Some(job_types)).await;
                 match new_next_times {

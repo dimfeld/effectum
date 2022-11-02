@@ -39,6 +39,7 @@ pub struct JobData {
     pub heartbeat_increment: i32,
     pub job_type: String,
     pub priority: i32,
+    pub weight: u16,
     pub payload: Vec<u8>,
     pub expires: AtomicI64,
 
@@ -63,6 +64,7 @@ impl Debug for JobData {
             .field("heartbeat_increment", &self.heartbeat_increment)
             .field("job_type", &self.job_type)
             .field("priority", &self.priority)
+            .field("weight", &self.weight)
             .field("payload", &self.payload)
             .field("expires", &self.expires)
             .field("start_time", &self.start_time)
@@ -215,10 +217,10 @@ impl JobData {
                 {
                     // Move job from active_jobs to done_jobs, and add the run info
                     let mut stmt = tx.prepare_cached(r##"INSERT INTO done_jobs
-                      (job_id, external_id, job_type, priority, status, from_recurring_job, orig_run_at, payload,
+                      (job_id, external_id, job_type, priority, weight, status, from_recurring_job, orig_run_at, payload,
                        max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, started_at, finished_at, default_timeout,
                        heartbeat_increment, run_info)
-                       SELECT job_id, external_id, job_type, priority, $status, from_recurring_job, orig_run_at, payload,
+                       SELECT job_id, external_id, job_type, priority, weight, $status, from_recurring_job, orig_run_at, payload,
                               max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, started_at, $now, default_timeout,
                               heartbeat_increment,
                               json_array_append(run_info, $this_run_info) AS run_info

@@ -54,7 +54,6 @@ where
 {
     pub name: SmartString,
     pub runner: JobFn<CONTEXT>,
-    pub weight: u16,
     pub autoheartbeat: bool,
 }
 
@@ -65,7 +64,6 @@ where
     pub fn new<F, Fut, T, E>(
         name: impl Into<SmartString>,
         runner: F,
-        weight: u16,
         autoheartbeat: bool,
     ) -> JobDef<CONTEXT>
     where
@@ -127,7 +125,6 @@ where
 
         JobDef {
             name: name.into(),
-            weight,
             runner: Arc::new(f),
             autoheartbeat,
         }
@@ -141,7 +138,7 @@ where
         T: Send + Sync + Debug + Serialize + 'static,
         E: Send + Display + 'static,
     {
-        let def = JobDef::new(name, runner, 1, false);
+        let def = JobDef::new(name, runner, false);
         JobDefBuilder { def }
     }
 }
@@ -159,11 +156,6 @@ where
 {
     pub fn autoheartbeat(mut self, autoheartbeat: bool) -> Self {
         self.def.autoheartbeat = autoheartbeat;
-        self
-    }
-
-    pub fn weight(mut self, weight: u16) -> Self {
-        self.def.weight = weight;
         self
     }
 
