@@ -16,7 +16,6 @@ pub mod worker;
 use std::{path::Path, sync::Arc};
 
 use deadpool_sqlite::{Hook, HookError, HookErrorCause};
-pub use error::{Error, Result};
 use pending_jobs::monitor_pending_jobs;
 use rusqlite::Connection;
 use shared_state::{SharedState, SharedStateData};
@@ -24,6 +23,11 @@ use sqlite_functions::register_functions;
 use time::Duration;
 use tokio::task::JoinHandle;
 use worker_list::Workers;
+
+pub use error::{Error, Result};
+pub use job::{Job, JobData};
+pub use job_registry::{JobDef, JobDefBuilder, JobRegistry};
+pub use worker::{Worker, WorkerBuilder};
 
 pub(crate) type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
 
@@ -82,7 +86,7 @@ struct Tasks {
 
 pub struct Queue {
     state: SharedState,
-    tasks: Option<Tasks>,
+    tasks: std::sync::Mutex<Option<Tasks>>,
 }
 
 impl Queue {
@@ -93,6 +97,8 @@ impl Queue {
     pub async fn new(file: &Path) -> Result<Queue> {
         let mut conn = Connection::open(file).map_err(Error::OpenDatabase)?;
         conn.pragma_update(None, "journal", "wal")
+            .map_err(Error::OpenDatabase)?;
+        conn.pragma_update(None, "synchronous", "normal")
             .map_err(Error::OpenDatabase)?;
 
         register_functions(&mut conn)?;
@@ -140,11 +146,11 @@ impl Queue {
 
         let q = Queue {
             state: shared_state,
-            tasks: Some(Tasks {
+            tasks: std::sync::Mutex::new(Some(Tasks {
                 close: close_tx,
                 worker_count_rx,
                 pending_jobs_monitor,
-            }),
+            })),
         };
 
         Ok(q)
@@ -174,18 +180,25 @@ impl Queue {
     }
 
     /// Stop the queue, and wait for existing workers to finish.
-    pub async fn close(&mut self, timeout: std::time::Duration) -> Result<()> {
-        if let Some(mut tasks) = self.tasks.take() {
+    pub async fn close(&self, timeout: std::time::Duration) -> Result<()> {
+        let tasks = {
+            let mut tasks_holder = self.tasks.lock().unwrap();
+            tasks_holder.take()
+        };
+
+        if let Some(mut tasks) = tasks {
             tasks.close.send(()).ok();
             Self::wait_for_workers_to_stop(&mut tasks, timeout).await?;
         }
+
         Ok(())
     }
 }
 
 impl Drop for Queue {
     fn drop(&mut self) {
-        if let Some(tasks) = self.tasks.take() {
+        let mut tasks = self.tasks.lock().unwrap();
+        if let Some(tasks) = tasks.take() {
             tasks.close.send(()).ok();
         }
     }
@@ -862,7 +875,7 @@ mod tests {
                 jobs.push(job_id);
             }
 
-            let _worker = test
+            let worker = test
                 .worker()
                 .max_concurrency(10)
                 .build()
@@ -875,6 +888,10 @@ mod tests {
 
             // With a weight of 3, there should be at most three jobs (10 / 3) running at once.
             assert_eq!(test.context.max_count().await, 3);
+            let counts = worker.counts();
+
+            assert_eq!(counts.started, 10);
+            assert_eq!(counts.finished, 10);
         }
 
         #[tokio::test(start_paused = true)]

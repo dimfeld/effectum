@@ -2,7 +2,7 @@ use ahash::HashMap;
 use rusqlite::named_params;
 use std::fmt::Debug;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use time::OffsetDateTime;
 use tokio::sync::{oneshot, Mutex, Notify};
@@ -26,7 +26,13 @@ struct CancellableTask {
 
 pub struct Worker {
     pub id: WorkerId,
+    counts: Arc<RunningJobs>,
     worker_list_task: Option<CancellableTask>,
+}
+
+pub struct WorkerCounts {
+    pub started: u64,
+    pub finished: u64,
 }
 
 impl Worker {
@@ -53,6 +59,13 @@ impl Worker {
         CONTEXT: Send + Sync + Debug + Clone + 'static,
     {
         WorkerBuilder::new(registry, queue, context)
+    }
+
+    pub fn counts(&self) -> WorkerCounts {
+        WorkerCounts {
+            started: self.counts.started.load(Ordering::Relaxed),
+            finished: self.counts.finished.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -161,13 +174,17 @@ where
         let listener = workers.add_worker(&job_list);
         drop(workers);
 
+        let counts = Arc::new(RunningJobs {
+            started: AtomicU64::new(0),
+            finished: AtomicU64::new(0),
+            current_weighted: AtomicU32::new(0),
+            job_finished: Notify::new(),
+        });
+
         let worker_id = listener.id;
         let worker_internal = WorkerInternal {
             listener,
-            running_jobs: Arc::new(RunningJobs {
-                count: AtomicU16::new(0),
-                job_finished: Notify::new(),
-            }),
+            running_jobs: counts.clone(),
             job_list: job_list.into_iter().map(String::from).collect(),
             job_defs: Arc::new(job_defs),
             queue: self.queue.state.clone(),
@@ -180,6 +197,7 @@ where
 
         Ok(Worker {
             id: worker_id,
+            counts,
             worker_list_task: Some(CancellableTask {
                 close_tx,
                 join_handle,
@@ -189,7 +207,9 @@ where
 }
 
 struct RunningJobs {
-    count: AtomicU16,
+    started: AtomicU64,
+    finished: AtomicU64,
+    current_weighted: AtomicU32,
     job_finished: Notify,
 }
 
@@ -224,13 +244,14 @@ where
     async fn run(self, mut close_rx: oneshot::Receiver<()>) {
         let mut global_close_rx = self.queue.close.clone();
         loop {
-            let mut running_jobs = self.running_jobs.count.load(Ordering::Relaxed);
-            if running_jobs < self.min_concurrency {
+            let mut running_jobs = self.running_jobs.current_weighted.load(Ordering::Relaxed);
+            let min_concurrency = self.min_concurrency as u32;
+            if running_jobs < min_concurrency {
                 log_error(self.run_ready_jobs().await);
-                running_jobs = self.running_jobs.count.load(Ordering::Relaxed);
+                running_jobs = self.running_jobs.current_weighted.load(Ordering::Relaxed);
             }
 
-            let grab_new_jobs = running_jobs < self.min_concurrency;
+            let grab_new_jobs = running_jobs < min_concurrency;
 
             tokio::select! {
                 biased;
@@ -261,8 +282,8 @@ where
 
     async fn run_ready_jobs(&self) -> Result<()> {
         tracing::trace!("Checking for ready jobs");
-        let running_count = self.running_jobs.count.load(Ordering::Relaxed);
-        let max_concurrency = self.max_concurrency;
+        let running_count = self.running_jobs.current_weighted.load(Ordering::Relaxed);
+        let max_concurrency = self.max_concurrency as u32;
         let max_jobs = max_concurrency - running_count;
         let job_types = self
             .job_list
@@ -271,7 +292,6 @@ where
             .collect::<Vec<_>>();
 
         let queue = self.queue.clone();
-        let job_defs = self.job_defs.clone();
         let running_jobs = self.running_jobs.clone();
         let worker_id = self.listener.id;
         let now = self.queue.time.now();
@@ -366,7 +386,7 @@ where
                     let mut running_count = running_count;
                     for job in jobs {
                         let job = job?;
-                        let weight = job.weight;
+                        let weight = job.weight as u32;
 
                         event!(Level::DEBUG, running_count, weight, max_concurrency);
 
@@ -384,7 +404,8 @@ where
                         })?;
 
                         running_count =
-                            running_jobs.count.fetch_add(weight, Ordering::Relaxed) + weight;
+                            running_jobs.current_weighted.fetch_add(weight, Ordering::Relaxed) + weight;
+                        running_jobs.started.fetch_add(1, Ordering::Relaxed);
 
                         let (done_tx, done_rx) = tokio::sync::watch::channel(false);
                         let job = Job(Arc::new(JobData {
@@ -395,7 +416,7 @@ where
                             job_type: job.job_type,
                             payload: job.payload.unwrap_or_default(),
                             priority: job.priority,
-                            weight,
+                            weight: job.weight,
                             start_time: now,
                             current_try: job.current_try,
                             backoff_multiplier: job.backoff_multiplier,
@@ -476,7 +497,10 @@ where
 
             // Do this in a separate task from the job runner so that even if something goes horribly wrong
             // we'll still be able to update the internal counts.
-            running.count.fetch_sub(job.weight, Ordering::Relaxed);
+            running
+                .current_weighted
+                .fetch_sub(job.weight as u32, Ordering::Relaxed);
+            running.finished.fetch_add(1, Ordering::Relaxed);
             running.job_finished.notify_one();
         });
 

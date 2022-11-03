@@ -1,5 +1,6 @@
 [workspace]
 members = [
-  "local"
+  "prefect",
+  "stress_test"
 ]
 resolver = "2"

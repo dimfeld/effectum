@@ -1,3 +1,5 @@
+use deadpool_sqlite::InteractError;
+
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(thiserror::Error, Debug)]
@@ -21,7 +23,7 @@ pub enum Error {
     #[error("Internal error: {0}")]
     Panic(#[from] tokio::task::JoinError),
     #[error("Internal error: {0}")]
-    DbInteract(#[from] deadpool_sqlite::InteractError),
+    DbInteract(String),
     #[error("Job not found")]
     NotFound,
     #[error("Error decoding job run info {0}")]
@@ -40,4 +42,10 @@ pub enum Error {
     ExpiredWhileRecordingSuccess,
     #[error("Worker {0} not found")]
     WorkerNotFound(u64),
+}
+
+impl From<InteractError> for Error {
+    fn from(e: InteractError) -> Self {
+        Error::DbInteract(e.to_string())
+    }
 }
