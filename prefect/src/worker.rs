@@ -281,7 +281,6 @@ where
     }
 
     async fn run_ready_jobs(&self) -> Result<()> {
-        tracing::trace!("Checking for ready jobs");
         let running_count = self.running_jobs.current_weighted.load(Ordering::Relaxed);
         let max_concurrency = self.max_concurrency as u32;
         let max_jobs = max_concurrency - running_count;
@@ -307,7 +306,8 @@ where
 
                 {
                     let mut stmt = tx.prepare_cached(
-                        r##"SELECT job_id, external_id, priority, weight, job_type, current_try,
+                        r##"SELECT job_id, external_id, active_jobs.priority, weight,
+                            job_type, current_try,
                             COALESCE(checkpointed_payload, payload) as payload,
                             default_timeout,
                             heartbeat_increment,
@@ -316,8 +316,11 @@ where
                             backoff_initial_interval,
                             max_retries
                         FROM active_jobs
-                        WHERE active_worker_id IS NULL AND job_type in rarray($job_types) AND run_at <= $now
-                        ORDER BY priority DESC, run_at
+                        JOIN jobs USING(job_id)
+                        WHERE active_worker_id IS NULL
+                            AND run_at <= $now
+                            AND job_type in rarray($job_types)
+                        ORDER BY active_jobs.priority DESC, run_at
                         LIMIT $limit"##,
                     )?;
 
@@ -403,8 +406,10 @@ where
                             "$expiration": expiration
                         })?;
 
-                        running_count =
-                            running_jobs.current_weighted.fetch_add(weight, Ordering::Relaxed) + weight;
+                        running_count = running_jobs
+                            .current_weighted
+                            .fetch_add(weight, Ordering::Relaxed)
+                            + weight;
                         running_jobs.started.fetch_add(1, Ordering::Relaxed);
 
                         let (done_tx, done_rx) = tokio::sync::watch::channel(false);

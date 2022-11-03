@@ -1,31 +1,47 @@
-use ahash::{HashSet, HashMap};
+use ahash::{HashMap, HashSet};
 use rusqlite::{named_params, Statement, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{worker::log_error, Error, NewJob, Queue, Result, SmartString};
 
-const INSERT_QUERY: &str = r##"
-    INSERT INTO active_jobs
-    (external_id, job_type, priority, weight, from_recurring_job, orig_run_at, run_at, payload,
-        current_try, max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
+const INSERT_JOBS_QUERY: &str = r##"
+    INSERT INTO jobs
+    (external_id, job_type, status, priority, weight, from_recurring_job, orig_run_at, payload,
+        max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
         added_at, default_timeout, heartbeat_increment, run_info)
     VALUES
-    ($external_id, $job_type, $priority, $weight, $from_recurring_job, $run_at, $run_at, $payload,
-        0, $max_retries, $backoff_multiplier, $backoff_randomization, $backoff_initial_interval,
+    ($external_id, $job_type, 'active', $priority, $weight, $from_recurring_job, $run_at, $payload,
+        $max_retries, $backoff_multiplier, $backoff_randomization, $backoff_initial_interval,
         $added_at, $default_timeout, $heartbeat_increment, '[]')
 "##;
 
+const INSERT_ACTIVE_JOBS_QUERY: &str = r##"
+    INSERT INTO active_jobs
+    (job_id,  priority, run_at)
+    VALUES
+    ($job_id, $priority, $run_at)
+"##;
+
 impl Queue {
-    fn execute_add_job_stmt(tx: &Transaction, stmt: &mut Statement, now: OffsetDateTime, run_time: OffsetDateTime, job_config: &NewJob, from_recurring_job: Option<i64>) -> Result<(i64, Uuid)> {
+    fn execute_add_job_stmt(
+        tx: &Transaction,
+        jobs_stmt: &mut Statement,
+        active_jobs_stmt: &mut Statement,
+        now: OffsetDateTime,
+        run_time: OffsetDateTime,
+        job_config: &NewJob,
+        from_recurring_job: Option<i64>,
+    ) -> Result<(i64, Uuid)> {
         let external_id: Uuid = ulid::Ulid::new().into();
-        stmt.execute(named_params! {
+        let run_at = run_time.unix_timestamp();
+        jobs_stmt.execute(named_params! {
             "$external_id": &external_id,
             "$job_type": job_config.job_type,
             "$priority": job_config.priority,
             "$weight": job_config.weight,
             "$from_recurring_job": from_recurring_job,
-            "$run_at": run_time.unix_timestamp(),
+            "$run_at": run_at,
             "$payload": job_config.payload.as_slice(),
             "$max_retries": job_config.retries.max_retries,
             "$backoff_multiplier": job_config.retries.backoff_multiplier,
@@ -36,27 +52,46 @@ impl Queue {
             "$added_at": now.unix_timestamp(),
         })?;
 
-        Ok((tx.last_insert_rowid(), external_id))
+        let job_id = tx.last_insert_rowid();
+
+        active_jobs_stmt.execute(named_params! {
+            "$job_id": job_id,
+            "$priority": job_config.priority,
+            "$run_at": run_at,
+        })?;
+
+        Ok((job_id, external_id))
     }
 
     pub async fn add_job(&self, job_config: NewJob) -> Result<(i64, Uuid)> {
         let job_type = job_config.job_type.clone();
         let now = self.state.time.now();
         let run_time = job_config.run_at.unwrap_or(now);
-        let ids = self.state.write_db(move |db| {
-            let tx = db.transaction()?;
+        let ids = self
+            .state
+            .write_db(move |db| {
+                let tx = db.transaction()?;
 
-            let ids = {
-                let mut add_job_stmt = tx.prepare_cached(INSERT_QUERY)?;
+                let ids = {
+                    let mut jobs_stmt = tx.prepare_cached(INSERT_JOBS_QUERY)?;
+                    let mut active_jobs_stmt = tx.prepare_cached(INSERT_ACTIVE_JOBS_QUERY)?;
 
-                Self::execute_add_job_stmt(&tx, &mut add_job_stmt, now, run_time, &job_config, None)?
-            };
+                    Self::execute_add_job_stmt(
+                        &tx,
+                        &mut jobs_stmt,
+                        &mut active_jobs_stmt,
+                        now,
+                        run_time,
+                        &job_config,
+                        None,
+                    )?
+                };
 
-            tx.commit()?;
+                tx.commit()?;
 
-            Ok::<_, Error>(ids)
-        })
-        .await?;
+                Ok::<_, Error>(ids)
+            })
+            .await?;
 
         if run_time <= now {
             let workers = self.state.workers.read().await;
@@ -78,47 +113,54 @@ impl Queue {
     pub async fn add_jobs(&self, jobs: Vec<NewJob>) -> Result<Vec<(i64, Uuid)>> {
         let now = self.state.time.now();
 
-        let (ids, ready_job_types, pending_job_types) = self.state.write_db(move |db| {
-            let mut ready_job_types : HashSet<String> = HashSet::default();
-            let mut pending_job_types : HashMap<String, i64> = HashMap::default();
-            let tx = db.transaction()?;
+        let (ids, ready_job_types, pending_job_types) = self
+            .state
+            .write_db(move |db| {
+                let mut ready_job_types: HashSet<String> = HashSet::default();
+                let mut pending_job_types: HashMap<String, i64> = HashMap::default();
+                let tx = db.transaction()?;
 
-            let mut ids = Vec::with_capacity(jobs.len());
-            {
-                let mut stmt = tx.prepare_cached(INSERT_QUERY)?;
+                let mut ids = Vec::with_capacity(jobs.len());
+                {
+                    let mut jobs_stmt = tx.prepare_cached(INSERT_JOBS_QUERY)?;
+                    let mut active_jobs_stmt = tx.prepare_cached(INSERT_ACTIVE_JOBS_QUERY)?;
 
-                for job_config in jobs {
-                    let run_time = job_config.run_at.unwrap_or(now);
-                    let job_ids = Self::execute_add_job_stmt(&tx, &mut stmt, now, run_time, &job_config, None)?;
+                    for job_config in jobs {
+                        let run_time = job_config.run_at.unwrap_or(now);
+                        let job_ids = Self::execute_add_job_stmt(
+                            &tx,
+                            &mut jobs_stmt,
+                            &mut active_jobs_stmt,
+                            now,
+                            run_time,
+                            &job_config,
+                            None,
+                        )?;
 
-                    ids.push(job_ids);
+                        ids.push(job_ids);
 
-                    if run_time <= now {
-                        ready_job_types.insert(job_config.job_type.clone());
-                    } else {
-                        let ts = run_time.unix_timestamp();
-                        pending_job_types
-                            .entry(job_config.job_type)
-                            .and_modify(|e| *e = std::cmp::min(*e, ts))
-                            .or_insert(ts);
+                        if run_time <= now {
+                            ready_job_types.insert(job_config.job_type.clone());
+                        } else {
+                            let ts = run_time.unix_timestamp();
+                            pending_job_types
+                                .entry(job_config.job_type)
+                                .and_modify(|e| *e = std::cmp::min(*e, ts))
+                                .or_insert(ts);
+                        }
                     }
                 }
-            }
 
-            tx.commit()?;
+                tx.commit()?;
 
-            Ok::<_, Error>((ids, ready_job_types, pending_job_types))
-        }).await?;
+                Ok::<_, Error>((ids, ready_job_types, pending_job_types))
+            })
+            .await?;
 
         for (job_type, job_time) in pending_job_types {
             let mut job_type = SmartString::from(job_type);
             job_type.shrink_to_fit();
-            log_error(
-                self.state
-                    .pending_jobs_tx
-                    .send((job_type, job_time))
-                    .await,
-            );
+            log_error(self.state.pending_jobs_tx.send((job_type, job_time)).await);
         }
 
         if !ready_job_types.is_empty() {

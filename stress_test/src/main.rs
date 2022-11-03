@@ -70,7 +70,7 @@ async fn run() -> Result<()> {
     .await
     .unwrap();
 
-    let jobs_per_worker = args.num_jobs / args.num_workers;
+    let jobs_per_worker = args.num_jobs / args.num_submit_tasks;
     let batches_per_worker = jobs_per_worker / args.new_job_batch_size;
 
     let submit_tasks = (0..args.num_submit_tasks)
@@ -83,7 +83,8 @@ async fn run() -> Result<()> {
         })
         .collect::<Vec<_>>();
 
-    let expected_total = (jobs_per_worker * args.num_workers) as u64;
+    let expected_total =
+        (args.new_job_batch_size * batches_per_worker * args.num_submit_tasks) as u64;
     let mut last_log_time = tokio::time::Instant::now();
     let mut last_total = 0;
     let log_interval = 10;

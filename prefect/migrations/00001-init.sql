@@ -1,13 +1,23 @@
 CREATE TABLE active_jobs (
   job_id INTEGER PRIMARY KEY,
-  external_id blob not null,
   active_worker_id bigint,
+  priority int not null default 0,
+  run_at bigint not null,
+  started_at bigint,
+  expires_at bigint
+);
+CREATE INDEX active_run_at ON active_jobs(priority desc, run_at) WHERE active_worker_id is null;
+CREATE INDEX running_expires_at ON active_jobs(expires_at) WHERE active_worker_id is not null;
+
+CREATE TABLE jobs (
+  job_id INTEGER PRIMARY KEY,
+  external_id blob not null,
   job_type text not null,
   priority int not null default 0,
   weight int not null default 1,
+  status text,
   from_recurring_job int,
   orig_run_at bigint not null,
-  run_at bigint not null,
   payload blob,
   checkpointed_payload blob,
   current_try int not null default 0,
@@ -18,40 +28,14 @@ CREATE TABLE active_jobs (
   added_at bigint not null,
   default_timeout int not null,
   heartbeat_increment int not null,
-  run_info text not null,
   started_at bigint,
-  expires_at bigint
-);
-
-CREATE UNIQUE INDEX active_jobs_external_id ON active_jobs(external_id);
-CREATE INDEX pending_run_at ON active_jobs(priority desc, run_at) WHERE active_worker_id is null;
-CREATE INDEX running_expires_at ON active_jobs(expires_at) WHERE active_worker_id is not null;
-
-CREATE TABLE done_jobs (
-  job_id INTEGER PRIMARY KEY,
-  external_id blob not null,
-  job_type text not null,
-  priority int not null default 0,
-  weight int not null default 1,
-  status text not null,
-  from_recurring_job int,
-  orig_run_at bigint not null,
-  payload blob,
-  max_retries int not null,
-  backoff_multiplier real not null,
-  backoff_randomization real not null,
-  backoff_initial_interval int not null,
-  added_at bigint not null,
-  started_at bigint,
-  finished_at bigint not null,
-  default_timeout int not null,
-  heartbeat_increment int not null,
+  finished_at bigint,
   run_info text
 );
 
-CREATE UNIQUE INDEX done_jobs_external_id ON done_jobs(external_id);
-CREATE INDEX done_jobs_job_type ON done_jobs(finished_at desc);
-CREATE INDEX done_jobs_job_type_and_time ON done_jobs(job_type, finished_at desc);
+CREATE UNIQUE INDEX active_jobs_external_id ON jobs(external_id);
+CREATE INDEX done_jobs_job_type ON jobs(finished_at desc) where finished_at is not null;
+CREATE INDEX done_jobs_job_type_and_time ON jobs(job_type, finished_at desc) where finished_at is not null;
 
 CREATE TABLE recurring (
   recurrring_job_id INTEGER PRIMARY KEY,

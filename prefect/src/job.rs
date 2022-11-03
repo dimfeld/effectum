@@ -3,7 +3,7 @@ use std::ops::Deref;
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
 
-use rusqlite::{named_params, OptionalExtension};
+use rusqlite::{named_params, params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use tokio::sync::Mutex;
@@ -95,6 +95,7 @@ impl Display for JobData {
 
 impl JobData {
     /// Checkpoint the task, replacing the payload with the passed in value.
+    #[instrument(level = "debug")]
     pub async fn checkpoint_blob(&self, new_payload: Vec<u8>) -> Result<OffsetDateTime> {
         // This counts as a heartbeat, so update the expiration.
         // Update the checkpoint_payload.
@@ -106,28 +107,41 @@ impl JobData {
         let actual_new_expire_time = self
             .queue
             .write_db(move |db| {
-                let mut stmt = db.prepare_cached(
-                    r##"UPDATE active_jobs
-                SET checkpointed_payload=$payload,
-                    expires_at = CASE
+                let tx = db.transaction()?;
+                let actual_new_expire_time = {
+                    let mut stmt = tx.prepare_cached(
+                        r##"UPDATE active_jobs
+                SET expires_at = CASE
                         WHEN expires_at > $new_expire_time THEN expires_at
                         ELSE $new_expire_time
                     END
                 WHERE job_id=$job_id AND active_worker_id=$worker_id
                 RETURNING expires_at"##,
-                )?;
+                    )?;
 
-                let actual_new_expire_time: Option<i64> = stmt
-                    .query_row(
-                        named_params! {
-                            "$payload": new_payload,
-                            "$new_expire_time": new_expire_time,
-                            "$job_id": job_id,
-                            "$worker_id": worker_id,
-                        },
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .optional()?;
+                    let actual_new_expire_time: Option<i64> = stmt
+                        .query_row(
+                            named_params! {
+                                "$new_expire_time": new_expire_time,
+                                "$job_id": job_id,
+                                "$worker_id": worker_id,
+                            },
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .optional()?;
+
+                    actual_new_expire_time
+                };
+
+                {
+                    let mut payload_update_stmt = tx.prepare_cached(
+                        r##"UPDATE jobs SET checkpointed_payload=?2 WHERE job_id=?1"##,
+                    )?;
+                    let altered = payload_update_stmt.execute(params![job_id, new_payload])?;
+                    event!(Level::ERROR, %job_id, %altered, "Checkpointed payload");
+                }
+
+                tx.commit()?;
 
                 Ok(actual_new_expire_time)
             })
@@ -190,7 +204,7 @@ impl JobData {
     }
 
     #[instrument(level = "debug")]
-    async fn mark_job_done<T: Serialize + Send + Debug>(
+    async fn mark_job_permanently_done<T: Serialize + Send + Debug>(
         &self,
         info: T,
         success: bool,
@@ -215,37 +229,40 @@ impl JobData {
             .write_db(move |db| {
                 let tx = db.transaction()?;
                 {
-                    // Move job from active_jobs to done_jobs, and add the run info
-                    let mut stmt = tx.prepare_cached(r##"INSERT INTO done_jobs
-                      (job_id, external_id, job_type, priority, weight, status, from_recurring_job, orig_run_at, payload,
-                       max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, started_at, finished_at, default_timeout,
-                       heartbeat_increment, run_info)
-                       SELECT job_id, external_id, job_type, priority, weight, $status, from_recurring_job, orig_run_at, payload,
-                              max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval, added_at, started_at, $now, default_timeout,
-                              heartbeat_increment,
-                              json_array_append(run_info, $this_run_info) AS run_info
-                        FROM active_jobs
-                        WHERE job_id=$job_id AND active_worker_id=$worker_id"##)?;
+                    let mut delete_stmt = tx.prepare_cached(
+                        r##"
+                        DELETE FROM active_jobs
+                        WHERE job_id=?1 AND active_worker_id=?2
+                        RETURNING job_id, started_at"##,
+                    )?;
 
-                    let altered = stmt.execute(named_params! {
-                            "$job_id": job_id,
-                            "$worker_id": worker_id,
-                            "$now": now,
-                            "$this_run_info": this_run_info,
-                            "$status": if success { "success" } else { "failed" },
-                        })?;
+                    let (job_id, started_at) = delete_stmt
+                        .query_row(params![job_id, worker_id], |row| {
+                            let job_id: i64 = row.get(0)?;
+                            let started_at: i64 = row.get(1)?;
+                            Ok((job_id, started_at))
+                        })
+                        .optional()?
+                        .ok_or(Error::Expired)?;
 
-                    if altered == 0 {
-                        // The job expired before we could record the success. Return a special error
-                        // for this so that we can log it. There isn't much to do about this though
-                        // since the job may already be running again. Generally, though, this
-                        // shouldn't happen if the heartbeat mechanism is used.
-                        return Err(Error::ExpiredWhileRecordingSuccess);
-                    }
+                    let mut stmt = tx.prepare_cached(
+                        r##"
+                        UPDATE jobs SET
+                            status = $status,
+                            run_info = json_array_append(run_info, $this_run_info),
+                            started_at = $started_at,
+                            finished_at = $now
+                        WHERE job_id=$job_id
+                        "##,
+                    )?;
 
-                    // Clean up the old entry.
-                    let mut stmt = tx.prepare_cached(r##"DELETE FROM active_jobs WHERE job_id=$1"##)?;
-                    stmt.execute(&[&job_id])?;
+                    stmt.execute(named_params! {
+                        "$job_id": job_id,
+                        "$now": now,
+                        "$started_at": started_at,
+                        "$this_run_info": this_run_info,
+                        "$status": if success { "success" } else { "failed" },
+                    })?;
                 }
 
                 tx.commit()?;
@@ -259,7 +276,7 @@ impl JobData {
     /// Mark the job as successful.
     #[instrument]
     pub async fn complete<T: Serialize + Send + Debug>(&self, info: T) -> Result<(), Error> {
-        self.mark_job_done(info, true).await
+        self.mark_job_permanently_done(info, true).await
     }
 
     /// Mark the job as failed.
@@ -271,7 +288,7 @@ impl JobData {
         // job.
 
         if self.current_try + 1 > self.max_retries {
-            return self.mark_job_done(info, false).await;
+            return self.mark_job_permanently_done(info, false).await;
         }
 
         let mut done = self.done.lock().await;
@@ -305,22 +322,27 @@ impl JobData {
                     let mut stmt = tx.prepare_cached(
                         r##"UPDATE active_jobs SET
                     active_worker_id=null,
-                    run_at=$next_run_time,
-                    current_try = current_try + 1,
-                    run_info = json_array_append(COALESCE(run_info, '[]'), $this_run_info)
+                    run_at=$next_run_time
                     WHERE job_id=$job_id AND active_worker_id=$worker_id"##,
                     )?;
 
                     let altered = stmt.execute(named_params! {
                         "$job_id": job_id,
                         "$worker_id": worker_id,
-                        "$this_run_info": this_run_info,
                         "$next_run_time": next_run_time,
                     })?;
 
                     if altered == 0 {
                         return Err(Error::Expired);
                     }
+
+                    let mut update_run_into_stmt = tx.prepare_cached(
+                        r##"UPDATE jobs SET
+                            current_try = current_try + 1,
+                            run_info = json_array_append(run_info, ?1)"##,
+                    )?;
+
+                    update_run_into_stmt.execute(params![this_run_info])?;
                 }
 
                 tx.commit()?;

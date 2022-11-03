@@ -28,6 +28,7 @@ pub struct JobStatus {
     pub weight: u16,
     pub orig_run_at: OffsetDateTime,
     pub payload: Vec<u8>,
+    pub current_try: Option<i32>,
     pub max_retries: i32,
     pub backoff_multiplier: f64,
     pub backoff_randomization: f64,
@@ -53,30 +54,26 @@ impl Queue {
             .interact(move |conn| {
                 let mut stmt = conn.prepare_cached(
                     r##"
-    SELECT job_type,
-        CASE WHEN
-            active_worker_id IS NOT NULL THEN 'running'
-            ELSE 'pending'
+    SELECT jobs.job_type,
+        CASE
+            WHEN active_worker_id IS NOT NULL THEN 'running'
+            WHEN active_jobs.priority IS NOT NULL THEN 'pending'
+            ELSE jobs.status
         END AS status,
-        priority, weight, orig_run_at, payload,
+        jobs.priority, weight, orig_run_at, payload, current_try,
         max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
-        added_at, started_at, NULL as finished_at, expires_at, run_info
-    FROM active_jobs
-    WHERE external_id=$1
-    UNION ALL
-    SELECT job_type, status,
-        priority, weight, orig_run_at, payload,
-        max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
-        added_at, started_at, finished_at, NULL as expires_at, run_info
-    FROM done_jobs
-    WHERE external_id=$1
-
-                    "##,
+        added_at,
+        COALESCE(active_jobs.started_at, jobs.started_at) AS started_at,
+        finished_at, expires_at, run_info
+    FROM jobs
+    LEFT JOIN active_jobs USING(job_id)
+    WHERE external_id=?1
+    "##,
                 )?;
 
                 let mut rows = stmt.query_and_then([external_id], |row| {
                     let started_at = row
-                        .get_ref(11)?
+                        .get_ref(12)?
                         .as_i64_or_null()
                         .map_err(|e| Error::FromSql(e, "started_at"))?
                         .map(|i| {
@@ -86,7 +83,7 @@ impl Queue {
                         .transpose()?;
 
                     let finished_at = row
-                        .get_ref(12)?
+                        .get_ref(13)?
                         .as_i64_or_null()
                         .map_err(|e| Error::FromSql(e, "finished_at"))?
                         .map(|i| {
@@ -96,7 +93,7 @@ impl Queue {
                         .transpose()?;
 
                     let expires_at = row
-                        .get_ref(13)?
+                        .get_ref(14)?
                         .as_i64_or_null()
                         .map_err(|e| Error::FromSql(e, "expires_at"))?
                         .map(|i| {
@@ -106,7 +103,7 @@ impl Queue {
                         .transpose()?;
 
                     let run_info_str = row
-                        .get_ref(14)?
+                        .get_ref(15)?
                         .as_str_or_null()
                         .map_err(|e| Error::FromSql(e, "run_info"))?;
                     let run_info: SmallVec<[RunInfo<Box<RawValue>>; 4]> = match run_info_str {
@@ -125,11 +122,12 @@ impl Queue {
                         orig_run_at: OffsetDateTime::from_unix_timestamp(row.get(4)?)
                             .map_err(|_| Error::TimestampOutOfRange("orig_run_at"))?,
                         payload: row.get(5)?,
-                        max_retries: row.get(6)?,
-                        backoff_multiplier: row.get(7)?,
-                        backoff_randomization: row.get(8)?,
-                        backoff_initial_interval: Duration::seconds(row.get(9)?),
-                        added_at: OffsetDateTime::from_unix_timestamp(row.get(10)?)
+                        current_try: row.get(6)?,
+                        max_retries: row.get(7)?,
+                        backoff_multiplier: row.get(8)?,
+                        backoff_randomization: row.get(9)?,
+                        backoff_initial_interval: Duration::seconds(row.get(10)?),
+                        added_at: OffsetDateTime::from_unix_timestamp(row.get(11)?)
                             .map_err(|_| Error::TimestampOutOfRange("added_at"))?,
                         started_at,
                         finished_at,
@@ -155,7 +153,7 @@ impl Queue {
             .interact(move |conn| {
                 let mut stmt = conn.prepare_cached(
                     r##"SELECT COUNT(*) as total, COUNT(active_worker_id) AS running
-                    FROM active_jobs WHERE active_worker_id IS NULL"##,
+                    FROM active_jobs"##,
                 )?;
                 stmt.query_row([], |row| Ok((row.get(0)?, row.get(1)?)))
             })

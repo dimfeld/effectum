@@ -25,7 +25,8 @@ pub(crate) async fn monitor_pending_jobs(
                 r##"
             SELECT job_type, MIN(run_at) as run_at
             FROM active_jobs
-            WHERE run_at > $1 AND active_worker_id IS NULL
+            JOIN jobs USING(job_id)
+            WHERE run_at > ?1 AND active_worker_id IS NULL
             GROUP BY job_type
             "##,
             )?;
@@ -70,14 +71,15 @@ async fn get_next_times(
                 r##"
             SELECT job_type, MIN(run_at) as run_at
             FROM active_jobs
-            WHERE run_at > $1 AND active_worker_id IS NULL
+            WHERE run_at > ?1 AND active_worker_id IS NULL
             GROUP BY job_type
             "##
             } else {
                 r##"
             SELECT job_type, MIN(run_at) as run_at
             FROM active_jobs
-            WHERE run_at > $1 AND active_worker_id IS NULL AND job_type IN rarray($2)
+            JOIN jobs USING(job_id)
+            WHERE run_at > ?1 AND active_worker_id IS NULL AND job_type IN rarray($2)
             GROUP BY job_type
             "##
             };

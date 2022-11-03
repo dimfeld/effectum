@@ -761,7 +761,7 @@ mod tests {
             "checkpoint_job",
             |job, _context: Arc<TestContext>| async move {
                 let payload = job.json_payload::<String>().unwrap();
-                event!(Level::INFO, %job, %payload);
+                event!(Level::INFO, %job, %payload, "running checkpoint job");
                 match job.current_try {
                     0 => {
                         assert_eq!(payload, "initial", "checkpoint when loaded");
@@ -857,6 +857,7 @@ mod tests {
         }
 
         #[tokio::test(start_paused = true)]
+        #[ignore = "Reenable once https://github.com/tokio-rs/tokio/pull/5115 is merged."]
         async fn weighted_jobs() {
             let test = TestEnvironment::new().await;
 

@@ -25,3 +25,6 @@ tracing-tree = "0.2.1"
 
 [features]
 rt-multi-thread = ["tokio/rt-multi-thread"]
+
+[profile.release]
+debug = 1
