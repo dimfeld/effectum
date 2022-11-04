@@ -7,7 +7,7 @@ use temp_dir::TempDir;
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(short, long, default_value_t = 100000)]
+    #[arg(short, long, default_value_t = 50000)]
     num_jobs: usize,
 
     #[arg(long)]

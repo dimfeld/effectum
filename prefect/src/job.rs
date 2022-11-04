@@ -225,25 +225,19 @@ impl JobData {
         let job_id = self.job_id;
         let worker_id = self.worker_id;
         let now = self.queue.time.now().unix_timestamp();
+        let started_at = self.start_time.unix_timestamp();
         self.queue
             .write_db(move |db| {
                 let tx = db.transaction()?;
                 {
                     let mut delete_stmt = tx.prepare_cached(
-                        r##"
-                        DELETE FROM active_jobs
-                        WHERE job_id=?1 AND active_worker_id=?2
-                        RETURNING job_id, started_at"##,
+                        r##"DELETE FROM active_jobs WHERE job_id=?1 AND active_worker_id=?2"##,
                     )?;
 
-                    let (job_id, started_at) = delete_stmt
-                        .query_row(params![job_id, worker_id], |row| {
-                            let job_id: i64 = row.get(0)?;
-                            let started_at: i64 = row.get(1)?;
-                            Ok((job_id, started_at))
-                        })
-                        .optional()?
-                        .ok_or(Error::Expired)?;
+                    let altered = delete_stmt.execute(params![job_id, worker_id])?;
+                    if altered == 0 {
+                        return Err(Error::Expired);
+                    }
 
                     let mut stmt = tx.prepare_cached(
                         r##"
