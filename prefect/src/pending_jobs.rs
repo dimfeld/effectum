@@ -19,8 +19,9 @@ pub(crate) async fn monitor_pending_jobs(
 ) -> Result<JoinHandle<()>> {
     // get the initial list of pending jobs so we can start for them
     let now = queue.time.now().unix_timestamp();
-    let initial_pending = queue
-        .write_db(move |db| {
+    let conn = queue.read_conn_pool.get().await?;
+    let initial_pending = conn
+        .interact(move |db| {
             let mut stmt = db.prepare(
                 r##"
             SELECT job_type, MIN(run_at) as run_at
@@ -38,9 +39,9 @@ pub(crate) async fn monitor_pending_jobs(
                 })?
                 .into_iter()
                 .collect::<Result<Vec<ScheduledJobType>, _>>()?;
-            Ok(rows)
+            Ok::<_, Error>(rows)
         })
-        .await?;
+        .await??;
 
     let next_times = HashMap::from_iter(initial_pending.into_iter());
 

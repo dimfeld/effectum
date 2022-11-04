@@ -1,17 +1,14 @@
 use ahash::HashMap;
-use rusqlite::named_params;
 use std::fmt::Debug;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use time::OffsetDateTime;
-use tokio::sync::{oneshot, Mutex, Notify};
+use tokio::sync::{oneshot, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
-use tracing::{event, instrument, Level};
-use uuid::Uuid;
+use tracing::{event, instrument, Level, Span};
 
-use crate::job::{Job, JobData};
+use crate::db_writer::ready_jobs::{GetReadyJobsArgs, ReadyJob};
+use crate::db_writer::{DbOperation, DbOperationType};
 use crate::job_registry::{JobDef, JobRegistry};
 use crate::shared_state::{SharedState, Time};
 use crate::worker_list::ListeningWorker;
@@ -206,11 +203,11 @@ where
     }
 }
 
-struct RunningJobs {
-    started: AtomicU64,
-    finished: AtomicU64,
-    current_weighted: AtomicU32,
-    job_finished: Notify,
+pub(crate) struct RunningJobs {
+    pub started: AtomicU64,
+    pub finished: AtomicU64,
+    pub current_weighted: AtomicU32,
+    pub job_finished: Notify,
 }
 
 struct WorkerInternal<CONTEXT>
@@ -290,157 +287,30 @@ where
             .map(|s| rusqlite::types::Value::from(s.clone()))
             .collect::<Vec<_>>();
 
-        let queue = self.queue.clone();
         let running_jobs = self.running_jobs.clone();
         let worker_id = self.listener.id;
         let now = self.queue.time.now();
-        let now_timestamp = now.unix_timestamp();
         event!(Level::TRACE, %now, "Checking ready jobs");
 
-        let ready_jobs = self
-            .queue
-            .write_db(move |db| {
-                let tx = db.transaction()?;
-
-                let mut ready_jobs = Vec::with_capacity(max_jobs as usize);
-
-                {
-                    let mut stmt = tx.prepare_cached(
-                        r##"SELECT job_id, external_id, active_jobs.priority, weight,
-                            job_type, current_try,
-                            COALESCE(checkpointed_payload, payload) as payload,
-                            default_timeout,
-                            heartbeat_increment,
-                            backoff_multiplier,
-                            backoff_randomization,
-                            backoff_initial_interval,
-                            max_retries
-                        FROM active_jobs
-                        JOIN jobs USING(job_id)
-                        WHERE active_worker_id IS NULL
-                            AND run_at <= $now
-                            AND job_type in rarray($job_types)
-                        ORDER BY active_jobs.priority DESC, run_at
-                        LIMIT $limit"##,
-                    )?;
-
-                    #[derive(Debug)]
-                    struct JobResult {
-                        job_id: i64,
-                        external_id: Uuid,
-                        priority: i32,
-                        weight: u16,
-                        job_type: String,
-                        current_try: i32,
-                        payload: Option<Vec<u8>>,
-                        default_timeout: i32,
-                        heartbeat_increment: i32,
-                        backoff_multiplier: f64,
-                        backoff_randomization: f64,
-                        backoff_initial_interval: i32,
-                        max_retries: i32,
-                    }
-
-                    let jobs = stmt.query_map(
-                        named_params! {
-                            "$job_types": Rc::new(job_types),
-                            "$now": now_timestamp,
-                            "$limit": max_jobs,
-                        },
-                        |row| {
-                            let job_id: i64 = row.get(0)?;
-                            let external_id: Uuid = row.get(1)?;
-                            let priority: i32 = row.get(2)?;
-                            let weight: u16 = row.get(3)?;
-                            let job_type: String = row.get(4)?;
-                            let current_try: i32 = row.get(5)?;
-                            let payload: Option<Vec<u8>> = row.get(6)?;
-                            let default_timeout: i32 = row.get(7)?;
-                            let heartbeat_increment: i32 = row.get(8)?;
-                            let backoff_multiplier: f64 = row.get(9)?;
-                            let backoff_randomization: f64 = row.get(10)?;
-                            let backoff_initial_interval: i32 = row.get(11)?;
-                            let max_retries: i32 = row.get(12)?;
-
-                            Ok(JobResult {
-                                job_id,
-                                priority,
-                                weight,
-                                job_type,
-                                current_try,
-                                payload,
-                                default_timeout,
-                                external_id,
-                                heartbeat_increment,
-                                backoff_multiplier,
-                                backoff_randomization,
-                                backoff_initial_interval,
-                                max_retries,
-                            })
-                        },
-                    )?;
-
-                    let mut set_running = tx.prepare_cached(
-                        r##"UPDATE active_jobs
-                        SET active_worker_id=$worker_id, started_at=$now, expires_at=$expiration
-                        WHERE job_id=$job_id"##,
-                    )?;
-
-                    let mut running_count = running_count;
-                    for job in jobs {
-                        let job = job?;
-                        let weight = job.weight as u32;
-
-                        event!(Level::DEBUG, running_count, weight, max_concurrency);
-
-                        if running_count + weight > max_concurrency {
-                            break;
-                        }
-
-                        let expiration = now_timestamp + job.default_timeout as i64;
-
-                        set_running.execute(named_params! {
-                            "$job_id": job.job_id,
-                            "$worker_id": worker_id,
-                            "$now": now_timestamp,
-                            "$expiration": expiration
-                        })?;
-
-                        running_count = running_jobs
-                            .current_weighted
-                            .fetch_add(weight, Ordering::Relaxed)
-                            + weight;
-                        running_jobs.started.fetch_add(1, Ordering::Relaxed);
-
-                        let (done_tx, done_rx) = tokio::sync::watch::channel(false);
-                        let job = Job(Arc::new(JobData {
-                            id: job.external_id,
-                            job_id: job.job_id,
-                            worker_id,
-                            heartbeat_increment: job.heartbeat_increment,
-                            job_type: job.job_type,
-                            payload: job.payload.unwrap_or_default(),
-                            priority: job.priority,
-                            weight: job.weight,
-                            start_time: now,
-                            current_try: job.current_try,
-                            backoff_multiplier: job.backoff_multiplier,
-                            backoff_randomization: job.backoff_randomization,
-                            backoff_initial_interval: job.backoff_initial_interval,
-                            max_retries: job.max_retries,
-                            done: Mutex::new(Some(done_tx)),
-                            queue: queue.clone(),
-                            expires: AtomicI64::new(expiration),
-                        }));
-
-                        ready_jobs.push((job, done_rx));
-                    }
-                }
-
-                tx.commit()?;
-                Ok(ready_jobs)
+        let (result_tx, result_rx) = oneshot::channel();
+        self.queue
+            .db_write_tx
+            .send(DbOperation {
+                worker_id,
+                span: Span::current(),
+                operation: DbOperationType::GetReadyJobs(GetReadyJobsArgs {
+                    job_types,
+                    max_jobs,
+                    max_concurrency,
+                    running_jobs,
+                    now,
+                    result_tx,
+                }),
             })
-            .await?;
+            .await
+            .map_err(|_| Error::QueueClosed)?;
+
+        let ready_jobs = result_rx.await.map_err(|_| Error::QueueClosed)??;
 
         for job in ready_jobs {
             self.run_job(job).await?;
@@ -452,7 +322,10 @@ where
     #[instrument(level="debug", skip(self, done), fields(worker_id = %self.listener.id))]
     async fn run_job(
         &self,
-        (job, mut done): (Job, tokio::sync::watch::Receiver<bool>),
+        ReadyJob {
+            job,
+            done_rx: mut done,
+        }: ReadyJob,
     ) -> Result<()> {
         let job_def = self
             .job_defs

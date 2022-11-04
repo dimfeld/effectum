@@ -42,6 +42,8 @@ pub enum Error {
     ExpiredWhileRecordingSuccess,
     #[error("Worker {0} not found")]
     WorkerNotFound(u64),
+    #[error("Queue closed unexpectedly")]
+    QueueClosed,
 }
 
 impl From<InteractError> for Error {

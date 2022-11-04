@@ -1,4 +1,5 @@
 use std::{
+    fmt::Display,
     ops::Deref,
     sync::{atomic::AtomicUsize, Arc},
     time::Duration,
@@ -151,7 +152,7 @@ impl TestEnvironment {
         let max_count_task =
             JobDef::builder("max_count", |_job, context: Arc<TestContext>| async move {
                 context.inc_max_count().await;
-                tokio::time::sleep(Duration::from_millis(1000)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
                 context.dec_max_count().await;
                 Ok::<_, String>(())
             })
@@ -187,7 +188,7 @@ async fn sleep_task(job: Job, _context: Arc<TestContext>) -> Result<(), String> 
     Ok(())
 }
 
-pub async fn wait_for<F, Fut, T, E>(label: &str, f: F) -> T
+pub async fn wait_for<F, Fut, T, E>(label: impl Display, f: F) -> T
 where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<T, E>>,
@@ -196,7 +197,7 @@ where
     wait_for_timeout(label, Duration::from_secs(5), f).await
 }
 
-pub async fn wait_for_timeout<F, Fut, T, E>(label: &str, timeout: Duration, f: F) -> T
+pub async fn wait_for_timeout<F, Fut, T, E>(label: impl Display, timeout: Duration, f: F) -> T
 where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<T, E>>,
@@ -241,18 +242,25 @@ where
     }
 }
 
-pub async fn wait_for_job(label: &str, queue: &Queue, job_id: Uuid) -> JobStatus {
+pub async fn wait_for_job(label: impl Display, queue: &Queue, job_id: Uuid) -> JobStatus {
     wait_for_job_status(label, queue, job_id, "success").await
 }
 
 pub async fn wait_for_job_status(
-    label: &str,
+    label: impl Display,
     queue: &Queue,
     job_id: Uuid,
     desired_status: &str,
 ) -> JobStatus {
     wait_for(label, || async {
-        let status = queue.get_job_status(job_id).await.unwrap();
+        let status = match queue.get_job_status(job_id).await {
+            Ok(status) => status,
+            Err(crate::Error::NotFound) => return Err("Job status not found".to_string()),
+            Err(e) => {
+                panic!("{}", e);
+            }
+        };
+
         if status.status == desired_status {
             Ok(status)
         } else {

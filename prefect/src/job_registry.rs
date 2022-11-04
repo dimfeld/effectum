@@ -3,7 +3,7 @@ use std::{borrow::Borrow, fmt::Debug, fmt::Display, panic::AssertUnwindSafe, pin
 use ahash::HashMap;
 use futures::{Future, FutureExt};
 use serde::Serialize;
-use tracing::{event, span, Level};
+use tracing::{event, span, Instrument, Level};
 
 use crate::{job::Job, worker::log_error, SmartString};
 
@@ -78,8 +78,7 @@ where
             tokio::spawn(async move {
                 let result = {
                     let span = span!(Level::INFO, "run_job", %job);
-                    let _enter = span.enter();
-                    AssertUnwindSafe(runner(job.clone(), context))
+                    AssertUnwindSafe(runner(job.clone(), context).instrument(span))
                         .catch_unwind()
                         .await
                 };

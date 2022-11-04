@@ -1,5 +1,7 @@
 use eyre::{eyre, Result};
+use futures::future::try_join_all;
 use std::{sync::Arc, time::Duration};
+use uuid::Uuid;
 
 use clap::Parser;
 use prefect::{JobDef, JobRegistry, NewJob, Queue};
@@ -7,7 +9,7 @@ use temp_dir::TempDir;
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(short, long, default_value_t = 50000)]
+    #[arg(short, long, default_value_t = 500000)]
     num_jobs: usize,
 
     #[arg(long)]
@@ -30,7 +32,12 @@ async fn empty_task(job: prefect::Job, context: ()) -> Result<(), String> {
     Ok(())
 }
 
-async fn submit_task(queue: Arc<Queue>, batch_size: usize, num_batches: usize) -> Result<()> {
+async fn submit_task(
+    queue: Arc<Queue>,
+    batch_size: usize,
+    num_batches: usize,
+) -> Result<Vec<Vec<(i64, Uuid)>>> {
+    let mut job_ids = Vec::with_capacity(num_batches);
     for _ in 0..num_batches {
         let jobs = (0..batch_size)
             .map(|_| NewJob {
@@ -38,9 +45,10 @@ async fn submit_task(queue: Arc<Queue>, batch_size: usize, num_batches: usize) -
                 ..Default::default()
             })
             .collect::<Vec<_>>();
-        queue.add_jobs(jobs).await?;
+        let ids = queue.add_jobs(jobs).await?;
+        job_ids.push(ids);
     }
-    Ok(())
+    Ok(job_ids)
 }
 
 async fn run() -> Result<()> {
@@ -107,6 +115,22 @@ async fn run() -> Result<()> {
             break;
         }
     }
+
+    let values = try_join_all(submit_tasks).await?;
+
+    println!("Verifying results...");
+    let mut checked = 0;
+    for task in values {
+        for batch in task.unwrap() {
+            for (_, uuid) in batch {
+                let job = queue.get_job_status(uuid).await?;
+                assert_eq!(job.status, "success");
+                checked += 1;
+            }
+        }
+    }
+
+    println!("{checked} jobs ok");
 
     queue.close(std::time::Duration::from_secs(86400)).await?;
 

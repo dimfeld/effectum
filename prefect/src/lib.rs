@@ -5,6 +5,7 @@ mod migrations;
 mod shared_state;
 mod worker_list;
 
+mod db_writer;
 pub mod job;
 pub mod job_registry;
 mod pending_jobs;
@@ -15,6 +16,7 @@ pub mod worker;
 
 use std::{path::Path, sync::Arc};
 
+use db_writer::db_writer_worker;
 use deadpool_sqlite::{Hook, HookError, HookErrorCause};
 use pending_jobs::monitor_pending_jobs;
 use rusqlite::Connection;
@@ -82,6 +84,7 @@ struct Tasks {
     close: tokio::sync::watch::Sender<()>,
     worker_count_rx: tokio::sync::watch::Receiver<usize>,
     pending_jobs_monitor: JoinHandle<()>,
+    db_write_worker: std::thread::JoinHandle<()>,
 }
 
 pub struct Queue {
@@ -123,14 +126,21 @@ impl Queue {
         let (worker_count_tx, worker_count_rx) = tokio::sync::watch::channel(0);
         let (pending_jobs_tx, pending_jobs_rx) = tokio::sync::mpsc::channel(10);
 
+        let (db_write_tx, db_write_rx) = tokio::sync::mpsc::channel(50);
+
         let shared_state = SharedState(Arc::new(SharedStateData {
-            db: std::sync::Mutex::new(conn),
             read_conn_pool,
             workers: tokio::sync::RwLock::new(Workers::new(worker_count_tx)),
             close: close_rx,
             time: crate::shared_state::Time::new(),
             pending_jobs_tx,
+            db_write_tx,
         }));
+
+        let db_write_worker = {
+            let shared_state = shared_state.clone();
+            std::thread::spawn(move || db_writer_worker(conn, shared_state, db_write_rx))
+        };
 
         let pending_jobs_monitor =
             monitor_pending_jobs(shared_state.clone(), pending_jobs_rx).await?;
@@ -150,6 +160,7 @@ impl Queue {
                 close: close_tx,
                 worker_count_rx,
                 pending_jobs_monitor,
+                db_write_worker,
             })),
         };
 
@@ -383,7 +394,7 @@ mod tests {
         let status1 = wait_for_job("job 1 to run", &test.queue, job_id).await;
         event!(Level::INFO, ?status1);
         let started_at1 = status1.started_at.expect("started_at is set on job 1");
-        event!(Level::INFO, orig_run_at=%status1.orig_run_at, run_at=%run_at1, "job 1");
+        event!(Level::INFO, orig_run_at=%status1.orig_run_at, run_at=%run_at1, %started_at1, "job 1");
         assert!(status1.orig_run_at >= run_at1);
         assert!(started_at1 >= run_at1);
 
@@ -391,7 +402,7 @@ mod tests {
         let status2 = wait_for_job("job 2 to run", &test.queue, job_id2).await;
         event!(Level::INFO, ?status2);
         let started_at2 = status2.started_at.expect("started_at is set on job 2");
-        event!(Level::INFO, orig_run_at=%status2.orig_run_at, run_at=%run_at2, "job 2");
+        event!(Level::INFO, orig_run_at=%status2.orig_run_at, run_at=%run_at2, %started_at2, "job 2");
         assert!(status2.orig_run_at >= run_at2);
         assert!(started_at2 >= run_at2);
 
@@ -818,7 +829,7 @@ mod tests {
     mod concurrency {
         use super::*;
 
-        #[tokio::test(start_paused = true)]
+        #[tokio::test]
         async fn limit_to_max_concurrency() {
             let test = TestEnvironment::new().await;
 
@@ -843,8 +854,8 @@ mod tests {
                 .await
                 .expect("failed to build worker");
 
-            for job_id in jobs {
-                wait_for_job("job to succeed", &test.queue, job_id).await;
+            for (i, job_id) in jobs.into_iter().enumerate() {
+                wait_for_job(format!("job {i} to succeed"), &test.queue, job_id).await;
             }
 
             assert_eq!(test.context.max_count().await, 5);

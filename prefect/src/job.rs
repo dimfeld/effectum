@@ -3,13 +3,16 @@ use std::ops::Deref;
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
 
-use rusqlite::{named_params, params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use tokio::sync::Mutex;
-use tracing::{event, instrument, Level};
+use tracing::{event, instrument, Level, Span};
 use uuid::Uuid;
 
+use crate::db_writer::complete::CompleteJobArgs;
+use crate::db_writer::heartbeat::{WriteCheckpointArgs, WriteHeartbeatArgs};
+use crate::db_writer::retry::RetryJobArgs;
+use crate::db_writer::{DbOperation, DbOperationType};
 use crate::job_status::RunInfo;
 use crate::shared_state::SharedState;
 use crate::worker::log_error;
@@ -102,50 +105,24 @@ impl JobData {
         let job_id = self.job_id;
         let worker_id = self.worker_id;
         let now = self.queue.time.now().unix_timestamp();
-        let new_expire_time = now + (self.heartbeat_increment as i64);
+        let new_expiration = now + (self.heartbeat_increment as i64);
 
-        let actual_new_expire_time = self
-            .queue
-            .write_db(move |db| {
-                let tx = db.transaction()?;
-                let actual_new_expire_time = {
-                    let mut stmt = tx.prepare_cached(
-                        r##"UPDATE active_jobs
-                SET expires_at = CASE
-                        WHEN expires_at > $new_expire_time THEN expires_at
-                        ELSE $new_expire_time
-                    END
-                WHERE job_id=$job_id AND active_worker_id=$worker_id
-                RETURNING expires_at"##,
-                    )?;
-
-                    let actual_new_expire_time: Option<i64> = stmt
-                        .query_row(
-                            named_params! {
-                                "$new_expire_time": new_expire_time,
-                                "$job_id": job_id,
-                                "$worker_id": worker_id,
-                            },
-                            |row| row.get::<_, i64>(0),
-                        )
-                        .optional()?;
-
-                    actual_new_expire_time
-                };
-
-                {
-                    let mut payload_update_stmt = tx.prepare_cached(
-                        r##"UPDATE jobs SET checkpointed_payload=?2 WHERE job_id=?1"##,
-                    )?;
-                    let altered = payload_update_stmt.execute(params![job_id, new_payload])?;
-                    event!(Level::ERROR, %job_id, %altered, "Checkpointed payload");
-                }
-
-                tx.commit()?;
-
-                Ok(actual_new_expire_time)
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        self.queue
+            .db_write_tx
+            .send(DbOperation {
+                worker_id,
+                span: Span::current(),
+                operation: DbOperationType::WriteCheckpoint(WriteCheckpointArgs {
+                    job_id,
+                    new_expiration,
+                    payload: new_payload,
+                    result_tx,
+                }),
             })
-            .await?;
+            .await
+            .map_err(|_| Error::QueueClosed)?;
+        let actual_new_expire_time = result_rx.await.map_err(|_| Error::QueueClosed)??;
 
         let new_time = actual_new_expire_time.ok_or(Error::Expired).and_then(|t| {
             OffsetDateTime::from_unix_timestamp(t)
@@ -226,43 +203,24 @@ impl JobData {
         let worker_id = self.worker_id;
         let now = self.queue.time.now().unix_timestamp();
         let started_at = self.start_time.unix_timestamp();
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         self.queue
-            .write_db(move |db| {
-                let tx = db.transaction()?;
-                {
-                    let mut delete_stmt = tx.prepare_cached(
-                        r##"DELETE FROM active_jobs WHERE job_id=?1 AND active_worker_id=?2"##,
-                    )?;
-
-                    let altered = delete_stmt.execute(params![job_id, worker_id])?;
-                    if altered == 0 {
-                        return Err(Error::Expired);
-                    }
-
-                    let mut stmt = tx.prepare_cached(
-                        r##"
-                        UPDATE jobs SET
-                            status = $status,
-                            run_info = json_array_append(run_info, $this_run_info),
-                            started_at = $started_at,
-                            finished_at = $now
-                        WHERE job_id=$job_id
-                        "##,
-                    )?;
-
-                    stmt.execute(named_params! {
-                        "$job_id": job_id,
-                        "$now": now,
-                        "$started_at": started_at,
-                        "$this_run_info": this_run_info,
-                        "$status": if success { "success" } else { "failed" },
-                    })?;
-                }
-
-                tx.commit()?;
-                Ok(())
+            .db_write_tx
+            .send(DbOperation {
+                worker_id,
+                span: Span::current(),
+                operation: DbOperationType::CompleteJob(CompleteJobArgs {
+                    job_id,
+                    run_info: this_run_info,
+                    now,
+                    started_at,
+                    success,
+                    result_tx,
+                }),
             })
-            .await?;
+            .await
+            .map_err(|_| Error::QueueClosed)?;
+        result_rx.await.map_err(|_| Error::QueueClosed)??;
 
         Ok(())
     }
@@ -295,7 +253,7 @@ impl JobData {
             * (self.backoff_multiplier).powi(self.current_try)
             * (1.0 + rand::random::<f64>() * self.backoff_randomization);
         event!(Level::DEBUG, %run_delta, current_try=%self.current_try);
-        let next_run_time = now.unix_timestamp() + (run_delta as i64);
+        let next_time = now.unix_timestamp() + (run_delta as i64);
         let job_id = self.job_id;
         let worker_id = self.worker_id;
 
@@ -308,47 +266,28 @@ impl JobData {
 
         let this_run_info = serde_json::to_string(&info).map_err(Error::InvalidJobRunInfo)?;
 
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         self.queue
-            .write_db(move |db| {
-                let tx = db.transaction()?;
-
-                {
-                    let mut stmt = tx.prepare_cached(
-                        r##"UPDATE active_jobs SET
-                    active_worker_id=null,
-                    run_at=$next_run_time
-                    WHERE job_id=$job_id AND active_worker_id=$worker_id"##,
-                    )?;
-
-                    let altered = stmt.execute(named_params! {
-                        "$job_id": job_id,
-                        "$worker_id": worker_id,
-                        "$next_run_time": next_run_time,
-                    })?;
-
-                    if altered == 0 {
-                        return Err(Error::Expired);
-                    }
-
-                    let mut update_run_into_stmt = tx.prepare_cached(
-                        r##"UPDATE jobs SET
-                            current_try = current_try + 1,
-                            run_info = json_array_append(run_info, ?1)"##,
-                    )?;
-
-                    update_run_into_stmt.execute(params![this_run_info])?;
-                }
-
-                tx.commit()?;
-                Ok(())
+            .db_write_tx
+            .send(DbOperation {
+                worker_id,
+                span: Span::current(),
+                operation: DbOperationType::RetryJob(RetryJobArgs {
+                    job_id,
+                    run_info: this_run_info,
+                    next_time,
+                    result_tx,
+                }),
             })
-            .await?;
+            .await
+            .map_err(|_| Error::QueueClosed)?;
+        result_rx.await.map_err(|_| Error::QueueClosed)??;
 
         // Make sure that the pending job watcher knows about the rescheduled job.
         log_error(
             self.queue
                 .pending_jobs_tx
-                .send((SmartString::from(&self.job_type), next_run_time))
+                .send((SmartString::from(&self.job_type), next_time))
                 .await,
         );
 
@@ -363,33 +302,23 @@ pub(crate) async fn send_heartbeat(
     queue: &SharedState,
 ) -> Result<OffsetDateTime> {
     let now = queue.time.now().unix_timestamp();
-    let new_expire_time = now + heartbeat_increment as i64;
-    let actual_new_expire_time = queue
-        .write_db(move |db| {
-            let mut stmt = db.prepare_cached(
-                r##"UPDATE active_jobs
-                SET expires_at = CASE
-                        WHEN expires_at > $new_expire_time THEN expires_at
-                        ELSE $new_expire_time
-                    END
-                WHERE job_id=$job_id AND active_worker_id=$worker_id
-                RETURNING expires_at"##,
-            )?;
+    let new_expiration = now + heartbeat_increment as i64;
 
-            let actual_new_expire_time: Option<i64> = stmt
-                .query_row(
-                    named_params! {
-                        "$new_expire_time": new_expire_time,
-                        "$job_id": job_id,
-                        "$worker_id": worker_id,
-                    },
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?;
-
-            Ok(actual_new_expire_time)
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    queue
+        .db_write_tx
+        .send(DbOperation {
+            worker_id,
+            span: Span::current(),
+            operation: DbOperationType::WriteHeartbeat(WriteHeartbeatArgs {
+                job_id,
+                new_expiration,
+                result_tx,
+            }),
         })
-        .await?;
+        .await
+        .map_err(|_| Error::QueueClosed)?;
+    let actual_new_expire_time = result_rx.await.map_err(|_| Error::QueueClosed)??;
 
     let new_time = actual_new_expire_time.ok_or(Error::Expired).and_then(|t| {
         OffsetDateTime::from_unix_timestamp(t)

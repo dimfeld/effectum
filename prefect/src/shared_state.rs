@@ -1,16 +1,16 @@
 use std::ops::Deref;
 use std::sync::Arc;
 
-use rusqlite::Connection;
 use time::OffsetDateTime;
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 
+use crate::db_writer::DbOperation;
 use crate::pending_jobs::ScheduledJobType;
 use crate::worker_list::Workers;
-use crate::Result;
 
 pub(crate) struct SharedStateData {
-    pub db: std::sync::Mutex<Connection>,
+    pub db_write_tx: mpsc::Sender<DbOperation>,
     /// Separate pool for miscellaneous read-only calls so they won't block the writes.
     pub read_conn_pool: deadpool_sqlite::Pool,
     pub workers: tokio::sync::RwLock<Workers>,
@@ -27,23 +27,6 @@ impl Deref for SharedState {
 
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-impl SharedState {
-    pub(crate) async fn write_db<F, T>(&self, f: F) -> Result<T>
-    where
-        F: (FnOnce(&mut Connection) -> Result<T>) + Send + 'static,
-        T: Send + 'static,
-    {
-        let state = self.0.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let mut db = state.db.lock().unwrap();
-            f(&mut db)
-        })
-        .await??;
-
-        Ok(result)
     }
 }
 
