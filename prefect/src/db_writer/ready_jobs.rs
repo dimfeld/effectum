@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use rusqlite::{named_params, types::Value, Transaction};
+use rusqlite::{named_params, types::Value, Connection, Transaction};
 use time::OffsetDateTime;
 use tokio::sync::Mutex;
 use tracing::{event, Level};
@@ -29,7 +29,7 @@ pub(crate) struct GetReadyJobsArgs {
 }
 
 fn do_get_ready_jobs(
-    tx: &mut Transaction,
+    tx: &Connection,
     queue: &SharedState,
     worker_id: u64,
     job_types: Vec<Value>,
@@ -175,11 +175,11 @@ fn do_get_ready_jobs(
 }
 
 pub(crate) fn get_ready_jobs(
-    tx: &mut Transaction,
+    tx: &Connection,
     queue: &SharedState,
     worker_id: u64,
     args: GetReadyJobsArgs,
-) {
+) -> bool {
     let GetReadyJobsArgs {
         job_types,
         max_jobs,
@@ -199,5 +199,8 @@ pub(crate) fn get_ready_jobs(
         running_jobs,
         now,
     );
+
+    let worked = result.is_ok();
     result_tx.send(result).ok();
+    worked
 }

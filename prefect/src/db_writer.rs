@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::shared_state::SharedState;
 use crate::worker::log_error;
 use rusqlite::{named_params, params, Connection, Transaction};
-use tracing::instrument;
+use tracing::{event, instrument, Level};
 
 use self::add_job::{add_job, add_jobs, AddJobArgs, AddMultipleJobsArgs};
 use self::complete::{complete_job, CompleteJobArgs};
@@ -41,16 +41,35 @@ fn process_operations(
     let mut tx = conn.transaction()?;
     for op in operations.drain(..) {
         let _span = op.span.enter();
-        match op.operation {
-            DbOperationType::CompleteJob(args) => complete_job(&mut tx, op.worker_id, args),
-            DbOperationType::RetryJob(args) => retry_job(&mut tx, op.worker_id, args),
-            DbOperationType::GetReadyJobs(args) => {
-                get_ready_jobs(&mut tx, state, op.worker_id, args)
+        // Use savepoints within the batch to allow rollback as needed, but still a single
+        // transaction for the whole batch since it's many times faster.
+        match tx.savepoint() {
+            Ok(mut sp) => {
+                let worked = match op.operation {
+                    DbOperationType::CompleteJob(args) => complete_job(&sp, op.worker_id, args),
+                    DbOperationType::RetryJob(args) => retry_job(&sp, op.worker_id, args),
+                    DbOperationType::GetReadyJobs(args) => {
+                        get_ready_jobs(&sp, state, op.worker_id, args)
+                    }
+                    DbOperationType::WriteCheckpoint(args) => {
+                        write_checkpoint(&sp, op.worker_id, args)
+                    }
+                    DbOperationType::WriteHeartbeat(args) => {
+                        write_heartbeat(&sp, op.worker_id, args)
+                    }
+                    DbOperationType::AddJob(args) => add_job(&sp, args),
+                    DbOperationType::AddMultipleJobs(args) => add_jobs(&sp, args),
+                };
+
+                if worked {
+                    log_error(sp.commit());
+                } else {
+                    log_error(sp.rollback());
+                }
             }
-            DbOperationType::WriteCheckpoint(args) => write_checkpoint(&mut tx, op.worker_id, args),
-            DbOperationType::WriteHeartbeat(args) => write_heartbeat(&mut tx, op.worker_id, args),
-            DbOperationType::AddJob(args) => add_job(&mut tx, args),
-            DbOperationType::AddMultipleJobs(args) => add_jobs(&mut tx, args),
+            Err(e) => {
+                event!(Level::ERROR, %e, "failed to create savepoint");
+            }
         }
     }
     tx.commit()?;

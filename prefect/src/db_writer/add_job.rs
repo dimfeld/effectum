@@ -1,5 +1,5 @@
 use ahash::{HashMap, HashSet};
-use rusqlite::named_params;
+use rusqlite::{named_params, Connection};
 use rusqlite::{Statement, Transaction};
 use time::OffsetDateTime;
 use tokio::sync::oneshot;
@@ -44,7 +44,7 @@ const INSERT_ACTIVE_JOBS_QUERY: &str = r##"
 "##;
 
 fn execute_add_job_stmt(
-    tx: &Transaction,
+    tx: &Connection,
     jobs_stmt: &mut Statement,
     active_jobs_stmt: &mut Statement,
     job_config: &NewJob,
@@ -82,11 +82,7 @@ fn execute_add_job_stmt(
     Ok((job_id, external_id))
 }
 
-fn do_add_job(
-    tx: &mut Transaction,
-    job_config: &NewJob,
-    now: OffsetDateTime,
-) -> Result<(i64, Uuid)> {
+fn do_add_job(tx: &Connection, job_config: &NewJob, now: OffsetDateTime) -> Result<(i64, Uuid)> {
     let mut jobs_stmt = tx.prepare_cached(INSERT_JOBS_QUERY)?;
     let mut active_jobs_stmt = tx.prepare_cached(INSERT_ACTIVE_JOBS_QUERY)?;
 
@@ -100,7 +96,7 @@ fn do_add_job(
     )
 }
 
-pub(crate) fn add_job(tx: &mut Transaction, args: AddJobArgs) {
+pub(crate) fn add_job(tx: &Connection, args: AddJobArgs) -> bool {
     let AddJobArgs {
         job,
         now,
@@ -108,11 +104,13 @@ pub(crate) fn add_job(tx: &mut Transaction, args: AddJobArgs) {
     } = args;
 
     let result = do_add_job(tx, &job, now);
+    let worked = result.is_ok();
     result_tx.send(result).ok();
+    worked
 }
 
 fn do_add_jobs(
-    tx: &mut Transaction,
+    tx: &Connection,
     jobs: Vec<NewJob>,
     now: OffsetDateTime,
 ) -> Result<AddMultipleJobsResult> {
@@ -137,7 +135,7 @@ fn do_add_jobs(
     Ok(AddMultipleJobsResult { ids })
 }
 
-pub(crate) fn add_jobs(tx: &mut Transaction, args: AddMultipleJobsArgs) {
+pub(crate) fn add_jobs(tx: &Connection, args: AddMultipleJobsArgs) -> bool {
     let AddMultipleJobsArgs {
         jobs,
         now,
@@ -145,5 +143,7 @@ pub(crate) fn add_jobs(tx: &mut Transaction, args: AddMultipleJobsArgs) {
     } = args;
 
     let result = do_add_jobs(tx, jobs, now);
+    let worked = result.is_ok();
     result_tx.send(result).ok();
+    worked
 }

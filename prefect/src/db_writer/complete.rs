@@ -1,4 +1,4 @@
-use rusqlite::{named_params, params, Transaction};
+use rusqlite::{named_params, params, Connection, Transaction};
 use tokio::sync::oneshot;
 
 use crate::{Error, Job, Result};
@@ -13,7 +13,7 @@ pub(crate) struct CompleteJobArgs {
 }
 
 fn do_complete_job(
-    tx: &mut Transaction,
+    tx: &Connection,
     job_id: i64,
     worker_id: u64,
     now: i64,
@@ -31,13 +31,13 @@ fn do_complete_job(
 
     let mut stmt = tx.prepare_cached(
         r##"
-                        UPDATE jobs SET
-                            status = $status,
-                            run_info = json_array_append(run_info, $this_run_info),
-                            started_at = $started_at,
-                            finished_at = $now
-                        WHERE job_id=$job_id
-                        "##,
+        UPDATE jobs SET
+            status = $status,
+            run_info = json_array_append(run_info, $this_run_info),
+            started_at = $started_at,
+            finished_at = $now
+        WHERE job_id=$job_id
+        "##,
     )?;
 
     stmt.execute(named_params! {
@@ -51,7 +51,7 @@ fn do_complete_job(
     Ok(())
 }
 
-pub(crate) fn complete_job(tx: &mut Transaction, worker_id: u64, args: CompleteJobArgs) {
+pub(crate) fn complete_job(tx: &Connection, worker_id: u64, args: CompleteJobArgs) -> bool {
     let CompleteJobArgs {
         job_id,
         run_info,
@@ -62,5 +62,7 @@ pub(crate) fn complete_job(tx: &mut Transaction, worker_id: u64, args: CompleteJ
     } = args;
 
     let result = do_complete_job(tx, job_id, worker_id, now, started_at, success, run_info);
+    let worked = result.is_ok();
     result_tx.send(result).ok();
+    worked
 }

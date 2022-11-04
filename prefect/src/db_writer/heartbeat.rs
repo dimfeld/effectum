@@ -1,4 +1,4 @@
-use rusqlite::{named_params, params, OptionalExtension, Transaction};
+use rusqlite::{named_params, params, Connection, OptionalExtension, Transaction};
 use tokio::sync::oneshot;
 
 use crate::Result;
@@ -10,7 +10,7 @@ pub(crate) struct WriteHeartbeatArgs {
 }
 
 fn do_write_heartbeat(
-    tx: &mut Transaction,
+    tx: &Connection,
     job_id: i64,
     worker_id: u64,
     new_expire_time: i64,
@@ -39,7 +39,7 @@ fn do_write_heartbeat(
     Ok(actual_new_expire_time)
 }
 
-pub(crate) fn write_heartbeat(tx: &mut Transaction, worker_id: u64, args: WriteHeartbeatArgs) {
+pub(crate) fn write_heartbeat(tx: &Connection, worker_id: u64, args: WriteHeartbeatArgs) -> bool {
     let WriteHeartbeatArgs {
         job_id,
         new_expiration,
@@ -47,7 +47,9 @@ pub(crate) fn write_heartbeat(tx: &mut Transaction, worker_id: u64, args: WriteH
     } = args;
 
     let result = do_write_heartbeat(tx, job_id, worker_id, new_expiration);
+    let worked = result.is_ok();
     result_tx.send(result).ok();
+    worked
 }
 
 pub(crate) struct WriteCheckpointArgs {
@@ -58,7 +60,7 @@ pub(crate) struct WriteCheckpointArgs {
 }
 
 fn do_write_checkpoint(
-    tx: &mut Transaction,
+    tx: &Connection,
     job_id: i64,
     worker_id: u64,
     new_expire_time: i64,
@@ -92,7 +94,7 @@ fn do_write_checkpoint(
     Ok(actual_new_expire_time)
 }
 
-pub(crate) fn write_checkpoint(tx: &mut Transaction, worker_id: u64, args: WriteCheckpointArgs) {
+pub(crate) fn write_checkpoint(tx: &Connection, worker_id: u64, args: WriteCheckpointArgs) -> bool {
     let WriteCheckpointArgs {
         job_id,
         new_expiration,
@@ -101,5 +103,7 @@ pub(crate) fn write_checkpoint(tx: &mut Transaction, worker_id: u64, args: Write
     } = args;
 
     let result = do_write_checkpoint(tx, job_id, worker_id, new_expiration, payload);
+    let worked = result.is_ok();
     result_tx.send(result).ok();
+    worked
 }

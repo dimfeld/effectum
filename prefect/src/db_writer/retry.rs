@@ -1,4 +1,4 @@
-use rusqlite::{named_params, params, Transaction};
+use rusqlite::{named_params, params, Connection, Transaction};
 use tokio::sync::oneshot;
 
 use crate::{Error, Result};
@@ -11,7 +11,7 @@ pub(crate) struct RetryJobArgs {
 }
 
 fn do_retry_job(
-    tx: &mut Transaction,
+    tx: &Connection,
     worker_id: u64,
     job_id: i64,
     run_info: String,
@@ -44,7 +44,7 @@ fn do_retry_job(
     Ok(())
 }
 
-pub(crate) fn retry_job(tx: &mut Transaction, worker_id: u64, args: RetryJobArgs) {
+pub(crate) fn retry_job(tx: &Connection, worker_id: u64, args: RetryJobArgs) -> bool {
     let RetryJobArgs {
         job_id,
         run_info,
@@ -53,5 +53,7 @@ pub(crate) fn retry_job(tx: &mut Transaction, worker_id: u64, args: RetryJobArgs
     } = args;
 
     let result = do_retry_job(tx, worker_id, job_id, run_info, next_time);
+    let worked = result.is_ok();
     result_tx.send(result).ok();
+    worked
 }
