@@ -65,9 +65,9 @@ fn execute_add_job_stmt(
         "$max_retries": job_config.retries.max_retries,
         "$backoff_multiplier": job_config.retries.backoff_multiplier,
         "$backoff_randomization": job_config.retries.backoff_randomization,
-        "$backoff_initial_interval": job_config.retries.backoff_initial_interval.whole_seconds(),
-        "$default_timeout" :job_config.timeout.whole_seconds(),
-        "$heartbeat_increment": job_config.heartbeat_increment.whole_seconds(),
+        "$backoff_initial_interval": job_config.retries.backoff_initial_interval.as_secs(),
+        "$default_timeout" :job_config.timeout.as_secs(),
+        "$heartbeat_increment": job_config.heartbeat_increment.as_secs(),
         "$added_at": now.unix_timestamp(),
     })?;
 

@@ -14,7 +14,7 @@ mod sqlite_functions;
 mod test_util;
 pub mod worker;
 
-use std::{path::Path, sync::Arc};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use db_writer::db_writer_worker;
 use deadpool_sqlite::{Hook, HookError, HookErrorCause};
@@ -22,7 +22,6 @@ use pending_jobs::monitor_pending_jobs;
 use rusqlite::Connection;
 use shared_state::{SharedState, SharedStateData};
 use sqlite_functions::register_functions;
-use time::Duration;
 use tokio::task::JoinHandle;
 use worker_list::Workers;
 
@@ -47,7 +46,7 @@ impl Default for Retries {
             max_retries: 3,
             backoff_multiplier: 2f32,
             backoff_randomization: 0.2,
-            backoff_initial_interval: Duration::seconds(20),
+            backoff_initial_interval: Duration::from_secs(20),
         }
     }
 }
@@ -61,8 +60,8 @@ pub struct NewJob {
     pub run_at: Option<time::OffsetDateTime>,
     pub payload: Vec<u8>,
     pub retries: Retries,
-    pub timeout: time::Duration,
-    pub heartbeat_increment: time::Duration,
+    pub timeout: Duration,
+    pub heartbeat_increment: Duration,
 }
 
 impl Default for NewJob {
@@ -74,8 +73,8 @@ impl Default for NewJob {
             run_at: Default::default(),
             payload: Default::default(),
             retries: Default::default(),
-            timeout: Duration::minutes(5),
-            heartbeat_increment: Duration::seconds(120),
+            timeout: Duration::from_secs(300),
+            heartbeat_increment: Duration::from_secs(120),
         }
     }
 }
@@ -111,7 +110,7 @@ impl Queue {
 
         let read_conn_pool = deadpool_sqlite::Config::new(file)
             .builder(deadpool_sqlite::Runtime::Tokio1)?
-            .recycle_timeout(Some(std::time::Duration::from_secs(5 * 60)))
+            .recycle_timeout(Some(Duration::from_secs(5 * 60)))
             .post_create(Hook::async_fn(move |conn, _| {
                 Box::pin(async move {
                     conn.interact(register_functions)
@@ -167,10 +166,7 @@ impl Queue {
         Ok(q)
     }
 
-    async fn wait_for_workers_to_stop(
-        tasks: &mut Tasks,
-        timeout: std::time::Duration,
-    ) -> Result<()> {
+    async fn wait_for_workers_to_stop(tasks: &mut Tasks, timeout: Duration) -> Result<()> {
         if *tasks.worker_count_rx.borrow_and_update() == 0 {
             return Ok(());
         }
@@ -191,7 +187,7 @@ impl Queue {
     }
 
     /// Stop the queue, and wait for existing workers to finish.
-    pub async fn close(&self, timeout: std::time::Duration) -> Result<()> {
+    pub async fn close(&self, timeout: Duration) -> Result<()> {
         let tasks = {
             let mut tasks_holder = self.tasks.lock().unwrap();
             tasks_holder.take()
@@ -630,7 +626,7 @@ mod tests {
             .add_job(NewJob {
                 job_type: "sleep".to_string(),
                 payload: serde_json::to_vec(&10000).unwrap(),
-                timeout: time::Duration::milliseconds(5000),
+                timeout: Duration::from_secs(5),
                 retries: crate::Retries {
                     max_retries: 2,
                     ..Default::default()
@@ -658,9 +654,9 @@ mod tests {
         let job_def = JobDef::builder(
             "manual_heartbeat",
             |job, _context: Arc<TestContext>| async move {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
                 job.heartbeat().await?;
-                tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+                tokio::time::sleep(Duration::from_millis(750)).await;
                 Ok::<_, crate::Error>(())
             },
         )
@@ -677,7 +673,7 @@ mod tests {
                     max_retries: 0,
                     ..Default::default()
                 },
-                timeout: time::Duration::milliseconds(1000),
+                timeout: Duration::from_secs(1),
                 ..Default::default()
             })
             .await
@@ -693,7 +689,7 @@ mod tests {
         let job_def = JobDef::builder(
             "auto_heartbeat",
             |_job, _context: Arc<TestContext>| async move {
-                tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+                tokio::time::sleep(Duration::from_millis(2500)).await;
                 Ok::<_, crate::Error>(())
             },
         )
@@ -711,7 +707,7 @@ mod tests {
                     max_retries: 0,
                     ..Default::default()
                 },
-                timeout: time::Duration::milliseconds(2000),
+                timeout: Duration::from_secs(2),
                 ..Default::default()
             })
             .await
@@ -806,7 +802,7 @@ mod tests {
                 retries: crate::Retries {
                     max_retries: 3,
                     backoff_multiplier: 1.0,
-                    backoff_initial_interval: time::Duration::milliseconds(1),
+                    backoff_initial_interval: Duration::from_millis(1),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -862,12 +858,6 @@ mod tests {
         }
 
         #[tokio::test]
-        #[ignore]
-        async fn fetches_batch() {
-            todo!();
-        }
-
-        #[tokio::test]
         async fn weighted_jobs() {
             let test = TestEnvironment::new().await;
 
@@ -907,7 +897,17 @@ mod tests {
 
         #[tokio::test]
         async fn fetches_again_at_min_concurrency() {
-            let test = TestEnvironment::new().await;
+            let mut test = TestEnvironment::new().await;
+
+            let ms_job = JobDef::builder("ms_job", |job, context: Arc<TestContext>| async move {
+                let start_time = context.start_time.elapsed().as_millis() as u32;
+                let sleep_time = job.json_payload::<u64>().unwrap();
+                tokio::time::sleep(Duration::from_millis(sleep_time)).await;
+                Ok::<_, String>(start_time)
+            })
+            .build();
+
+            test.registry.add(&ms_job);
 
             let mut jobs = Vec::new();
             for i in 0..20 {
@@ -915,9 +915,9 @@ mod tests {
                 let job_id = test
                     .queue
                     .add_job(NewJob {
-                        job_type: "sleep".to_string(),
+                        job_type: "ms_job".to_string(),
                         payload: serde_json::to_vec(&time).unwrap(),
-                        timeout: time::Duration::minutes(20),
+                        timeout: Duration::from_secs(20 * 60),
                         ..Default::default()
                     })
                     .await
@@ -928,7 +928,7 @@ mod tests {
 
             let _worker = test
                 .worker()
-                .min_concurrency(5)
+                .min_concurrency(6)
                 .max_concurrency(10)
                 .build()
                 .await
@@ -939,24 +939,31 @@ mod tests {
                 statuses.push(wait_for_job("job to succeed", &test.queue, job_id).await);
             }
 
+            let times = statuses
+                .iter()
+                .map(|s| serde_json::from_str::<u32>(s.run_info[0].info.get()).unwrap())
+                .collect::<Vec<_>>();
+            event!(Level::INFO, ?times);
+            println!("{:?}", times);
+
             // First 10 jobs should all start at same time.
-            let batch1_time = statuses[0].started_at.unwrap();
+            let batch1_time = times[0];
             for i in 1..10 {
-                assert_eq!(batch1_time, statuses[i].started_at.unwrap());
+                assert!(times[i] - batch1_time <= 1);
             }
 
             // Next 5 jobs should start together
-            let batch2_time = statuses[10].started_at.unwrap();
-            assert!(batch2_time >= batch1_time);
+            let batch2_time = times[10];
+            assert!(batch2_time - batch1_time >= 300);
             for i in 11..15 {
-                assert_eq!(batch2_time, statuses[i].started_at.unwrap());
+                assert!(times[i] - batch2_time <= 1);
             }
 
             // Final 5 jobs should start together
-            let batch3_time = statuses[15].started_at.unwrap();
-            assert!(batch3_time >= batch2_time);
+            let batch3_time = times[15];
+            assert!(batch3_time - batch2_time >= 300);
             for i in 16..20 {
-                assert_eq!(batch3_time, statuses[i].started_at.unwrap());
+                assert!(times[i] - batch3_time <= 1);
             }
         }
     }

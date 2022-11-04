@@ -1,5 +1,6 @@
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Duration;
 
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
@@ -54,7 +55,7 @@ impl Time {
 
     pub fn instant_for_timestamp(&self, timestamp: i64) -> Instant {
         let ts = std::cmp::max(timestamp - self.start_time.unix_timestamp(), 0) as u64;
-        let duration = std::time::Duration::from_secs(ts);
+        let duration = Duration::from_secs(ts);
         self.start_instant + duration
     }
 }

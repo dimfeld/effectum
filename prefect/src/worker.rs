@@ -290,7 +290,7 @@ where
         let running_jobs = self.running_jobs.clone();
         let worker_id = self.listener.id;
         let now = self.queue.time.now();
-        event!(Level::TRACE, %now, "Checking ready jobs");
+        event!(Level::TRACE, %now, current_running = %running_count, %max_concurrency, "Checking ready jobs");
 
         let (result_tx, result_rx) = oneshot::channel();
         self.queue

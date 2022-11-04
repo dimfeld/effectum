@@ -23,6 +23,7 @@ use crate::{
 
 #[derive(Debug)]
 pub struct TestContext {
+    pub start_time: tokio::time::Instant,
     pub counter: AtomicUsize,
     pub max_count: Mutex<(usize, usize)>,
     pub value: Mutex<Vec<String>>,
@@ -34,6 +35,7 @@ impl TestContext {
     pub fn new() -> Arc<TestContext> {
         let (watch_tx, watch_rx) = tokio::sync::watch::channel(0);
         Arc::new(TestContext {
+            start_time: tokio::time::Instant::now(),
             counter: AtomicUsize::new(0),
             max_count: Mutex::new((0, 0)),
             value: Mutex::new(Vec::new()),

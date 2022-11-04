@@ -32,7 +32,7 @@ pub(crate) enum DbOperationType {
     AddMultipleJobs(AddMultipleJobsArgs),
 }
 
-#[instrument(level = "trace", skip_all)]
+#[instrument(level = "trace", skip_all, fields(count = %operations.len()))]
 fn process_operations(
     conn: &mut Connection,
     state: &SharedState,
