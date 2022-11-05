@@ -53,6 +53,7 @@ fn do_get_ready_jobs(
             WHERE active_worker_id IS NULL
                 AND run_at <= $now
                 AND job_type in rarray($job_types)
+                AND weight <= $max_concurrency
             ORDER BY active_jobs.priority DESC, run_at
             LIMIT $limit"##,
     )?;
@@ -79,6 +80,7 @@ fn do_get_ready_jobs(
         named_params! {
             "$job_types": Rc::new(job_types),
             "$now": now_timestamp,
+            "$max_concurrency": max_concurrency,
             "$limit": max_jobs,
         },
         |row| {
