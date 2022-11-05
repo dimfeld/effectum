@@ -47,15 +47,11 @@ impl Worker {
         Ok(())
     }
 
-    pub fn builder<'a, CONTEXT>(
-        registry: &'a JobRegistry<CONTEXT>,
-        queue: &'a Queue,
-        context: CONTEXT,
-    ) -> WorkerBuilder<'a, CONTEXT>
+    pub fn builder<'a, CONTEXT>(queue: &'a Queue, context: CONTEXT) -> WorkerBuilder<'a, CONTEXT>
     where
         CONTEXT: Send + Sync + Debug + Clone + 'static,
     {
-        WorkerBuilder::new(registry, queue, context)
+        WorkerBuilder::new(queue, context)
     }
 
     pub fn counts(&self) -> WorkerCounts {
@@ -80,7 +76,8 @@ where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
     /// The job registry from which this worker should take its job functions.
-    registry: &'a JobRegistry<CONTEXT>,
+    registry: Option<&'a JobRegistry<CONTEXT>>,
+    job_defs: Option<Vec<JobDef<CONTEXT>>>,
     queue: &'a Queue,
     /// The context value to send to the worker's jobs.
     context: CONTEXT,
@@ -98,9 +95,10 @@ impl<'a, CONTEXT> WorkerBuilder<'a, CONTEXT>
 where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
-    pub fn new(registry: &'a JobRegistry<CONTEXT>, queue: &'a Queue, context: CONTEXT) -> Self {
+    pub fn new(queue: &'a Queue, context: CONTEXT) -> Self {
         Self {
-            registry,
+            registry: None,
+            job_defs: None,
             queue,
             context,
             jobs: Vec::new(),
@@ -109,12 +107,44 @@ where
         }
     }
 
-    pub fn job_types(mut self, job_types: &[impl AsRef<str>]) -> Self {
+    /// Get the job definitions from this JobRegistry object.
+    pub fn registry(mut self, registry: &'a JobRegistry<CONTEXT>) -> Self {
+        if self.job_defs.is_some() {
+            panic!("Cannot set both registry and job_defs");
+        }
+
+        self.registry = Some(registry);
+        self
+    }
+
+    /// Get the job definitions from this list of jobs.
+    pub fn jobs(mut self, jobs: impl Into<Vec<JobDef<CONTEXT>>>) -> Self {
+        if self.job_defs.is_some() {
+            panic!("Cannot set both registry and job_defs");
+        }
+
+        self.job_defs = Some(jobs.into());
+        self
+    }
+
+    fn has_job_type(&self, job_type: &str) -> bool {
+        if let Some(job_defs) = self.job_defs.as_ref() {
+            job_defs.iter().any(|job_def| job_def.name == job_type)
+        } else if let Some(registry) = self.registry.as_ref() {
+            registry.jobs.contains_key(job_type)
+        } else {
+            panic!("Must set either registry or job_defs");
+        }
+    }
+
+    /// Limit this worker to only running these job types, even if the registry contains more
+    /// types.
+    pub fn limit_job_types(mut self, job_types: &[impl AsRef<str>]) -> Self {
         self.jobs = job_types
             .iter()
             .map(|s| {
                 assert!(
-                    self.registry.jobs.contains_key(s.as_ref()),
+                    self.has_job_type(s.as_ref()),
                     "Job type {} not found in registry",
                     s.as_ref()
                 );
@@ -138,24 +168,37 @@ where
     }
 
     pub async fn build(self) -> Result<Worker> {
-        let job_list = if self.jobs.is_empty() {
-            self.registry.jobs.keys().cloned().collect()
-        } else {
-            self.jobs
-        };
+        let job_defs: HashMap<SmartString, JobDef<CONTEXT>> = if let Some(job_defs) = self.job_defs
+        {
+            job_defs
+                .into_iter()
+                .filter(|job| self.jobs.is_empty() || self.jobs.contains(&job.name))
+                .map(|job| (job.name.clone(), job))
+                .collect()
+        } else if let Some(registry) = self.registry {
+            let job_list = if self.jobs.is_empty() {
+                registry.jobs.keys().cloned().collect()
+            } else {
+                self.jobs
+            };
 
-        let job_defs = job_list
-            .iter()
-            .filter_map(|job| {
-                self.registry
-                    .jobs
-                    .get(job)
-                    .map(|job_def| (job.clone(), job_def.clone()))
-            })
-            .collect();
+            job_list
+                .iter()
+                .filter_map(|job| {
+                    registry
+                        .jobs
+                        .get(job)
+                        .map(|job_def| (job.clone(), job_def.clone()))
+                })
+                .collect()
+        } else {
+            panic!("Must set either registry or jobs");
+        };
 
         let max_concurrency = self.max_concurrency.unwrap_or(1).max(1);
         let min_concurrency = self.min_concurrency.unwrap_or(max_concurrency).max(1);
+
+        let job_list = job_defs.keys().cloned().collect::<Vec<_>>();
 
         event!(
             Level::INFO,

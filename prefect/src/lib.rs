@@ -266,7 +266,7 @@ mod tests {
     use crate::{
         job_registry::{JobDef, JobRegistry},
         test_util::{
-            create_test_queue, wait_for, wait_for_job, wait_for_job_status, TestContext,
+            create_test_queue, job_list, wait_for, wait_for_job, wait_for_job_status, TestContext,
             TestEnvironment,
         },
         worker::Worker,
@@ -577,7 +577,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn job_type_subset() {
+    async fn job_type_subset_with_registry() {
         let test = TestEnvironment::new().await;
 
         let mut run_jobs = Vec::new();
@@ -612,12 +612,96 @@ mod tests {
                 .1,
         );
 
-        let _worker = test
-            .worker()
-            .job_types(&["counter", "push_payload"])
+        let _worker = Worker::builder(&test.queue, test.context.clone())
+            .registry(&test.registry)
+            .limit_job_types(&["counter", "push_payload"])
             .build()
             .await
             .expect("failed to build worker");
+
+        run_jobs.extend(
+            test.queue
+                .add_jobs(vec![
+                    NewJob {
+                        job_type: "counter".to_string(),
+                        ..Default::default()
+                    },
+                    NewJob {
+                        job_type: "push_payload".to_string(),
+                        payload: serde_json::to_vec(&"test").unwrap(),
+                        ..Default::default()
+                    },
+                ])
+                .await
+                .expect("Failed to add jobs"),
+        );
+
+        no_run_jobs.push(
+            test.queue
+                .add_job(NewJob {
+                    job_type: "sleep".to_string(),
+                    payload: serde_json::to_vec(&"test").unwrap(),
+                    ..Default::default()
+                })
+                .await
+                .expect("failed to add job")
+                .1,
+        );
+
+        for (_, job_id) in run_jobs {
+            event!(Level::INFO, %job_id, "checking job that should run");
+            let status = wait_for_job("job to run", &test.queue, job_id).await;
+            assert!(status.run_info[0].success);
+        }
+
+        for job_id in no_run_jobs {
+            event!(Level::INFO, %job_id, "checking job that should not run");
+            let status = wait_for_job_status("job to run", &test.queue, job_id, "pending").await;
+            assert_eq!(status.run_info.len(), 0);
+        }
+    }
+    #[tokio::test]
+    async fn job_type_subset_with_job_list() {
+        let test = TestEnvironment::new().await;
+
+        let mut run_jobs = Vec::new();
+        let mut no_run_jobs = Vec::new();
+
+        run_jobs.extend(
+            test.queue
+                .add_jobs(vec![
+                    NewJob {
+                        job_type: "counter".to_string(),
+                        ..Default::default()
+                    },
+                    NewJob {
+                        job_type: "push_payload".to_string(),
+                        payload: serde_json::to_vec(&"test").unwrap(),
+                        ..Default::default()
+                    },
+                ])
+                .await
+                .expect("failed to add jobs"),
+        );
+
+        no_run_jobs.push(
+            test.queue
+                .add_job(NewJob {
+                    job_type: "sleep".to_string(),
+                    payload: serde_json::to_vec(&"test").unwrap(),
+                    ..Default::default()
+                })
+                .await
+                .expect("failed to add job")
+                .1,
+        );
+
+        let _worker = Worker::builder(&test.queue, test.context.clone())
+            .jobs(job_list())
+            .limit_job_types(&["counter", "push_payload"])
+            .build()
+            .await
+            .expect("failed to build worker from job list");
 
         run_jobs.extend(
             test.queue

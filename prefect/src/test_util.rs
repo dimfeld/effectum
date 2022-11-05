@@ -92,6 +92,73 @@ pub async fn create_test_queue() -> TestQueue {
     TestQueue { queue, dir }
 }
 
+pub fn job_list() -> Vec<JobDef<Arc<TestContext>>> {
+    let count_task = JobDef::builder("counter", |_job, context: Arc<TestContext>| async move {
+        context
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok::<_, String>("passed")
+    })
+    .build();
+
+    let sleep_task = JobDef::builder("sleep", sleep_task).build();
+
+    let push_payload = JobDef::builder(
+        "push_payload",
+        |job, context: Arc<TestContext>| async move {
+            let payload = job.json_payload::<String>().expect("parsing payload");
+            context.push_str(payload).await;
+            Ok::<_, String>(())
+        },
+    )
+    .build();
+
+    let wait_for_watch_task = JobDef::builder(
+        "wait_for_watch",
+        |job, context: Arc<TestContext>| async move {
+            let watch_value = job
+                .json_payload::<usize>()
+                .expect("payload is not a number");
+            let mut watch_rx = context.watch_rx.clone();
+            while watch_rx.borrow().deref() != &watch_value {
+                watch_rx.changed().await.expect("watch_rx changed");
+            }
+            Ok::<_, String>(())
+        },
+    )
+    .build();
+
+    let retry_task = JobDef::builder("retry", |job, _context: Arc<TestContext>| async move {
+        let succeed_after = job
+            .json_payload::<usize>()
+            .expect("payload is not a number");
+        if job.current_try >= succeed_after as i32 {
+            Ok(format!("success on try {}", job.current_try))
+        } else {
+            Err(format!("fail on try {}", job.current_try))
+        }
+    })
+    .build();
+
+    let max_count_task =
+        JobDef::builder("max_count", |_job, context: Arc<TestContext>| async move {
+            context.inc_max_count().await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            context.dec_max_count().await;
+            Ok::<_, String>(())
+        })
+        .build();
+
+    vec![
+        count_task,
+        sleep_task,
+        push_payload,
+        wait_for_watch_task,
+        retry_task,
+        max_count_task,
+    ]
+}
+
 pub(crate) struct TestEnvironment {
     pub queue: TestQueue,
     pub time: Time,
@@ -104,70 +171,7 @@ impl TestEnvironment {
         Lazy::force(&TRACING);
         let queue = create_test_queue().await;
 
-        let count_task = JobDef::builder("counter", |_job, context: Arc<TestContext>| async move {
-            context
-                .counter
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok::<_, String>("passed")
-        })
-        .build();
-
-        let sleep_task = JobDef::builder("sleep", sleep_task).build();
-
-        let push_payload = JobDef::builder(
-            "push_payload",
-            |job, context: Arc<TestContext>| async move {
-                let payload = job.json_payload::<String>().expect("parsing payload");
-                context.push_str(payload).await;
-                Ok::<_, String>(())
-            },
-        )
-        .build();
-
-        let wait_for_watch_task = JobDef::builder(
-            "wait_for_watch",
-            |job, context: Arc<TestContext>| async move {
-                let watch_value = job
-                    .json_payload::<usize>()
-                    .expect("payload is not a number");
-                let mut watch_rx = context.watch_rx.clone();
-                while watch_rx.borrow().deref() != &watch_value {
-                    watch_rx.changed().await.expect("watch_rx changed");
-                }
-                Ok::<_, String>(())
-            },
-        )
-        .build();
-
-        let retry_task = JobDef::builder("retry", |job, _context: Arc<TestContext>| async move {
-            let succeed_after = job
-                .json_payload::<usize>()
-                .expect("payload is not a number");
-            if job.current_try >= succeed_after as i32 {
-                Ok(format!("success on try {}", job.current_try))
-            } else {
-                Err(format!("fail on try {}", job.current_try))
-            }
-        })
-        .build();
-
-        let max_count_task =
-            JobDef::builder("max_count", |_job, context: Arc<TestContext>| async move {
-                context.inc_max_count().await;
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                context.dec_max_count().await;
-                Ok::<_, String>(())
-            })
-            .build();
-
-        let registry = JobRegistry::new(&[
-            count_task,
-            sleep_task,
-            push_payload,
-            wait_for_watch_task,
-            retry_task,
-            max_count_task,
-        ]);
+        let registry = JobRegistry::new(job_list());
 
         TestEnvironment {
             time: queue.state.time.clone(),
@@ -178,7 +182,7 @@ impl TestEnvironment {
     }
 
     pub fn worker(&self) -> WorkerBuilder<Arc<TestContext>> {
-        Worker::builder(&self.registry, &self.queue, self.context.clone())
+        Worker::builder(&self.queue, self.context.clone()).registry(&self.registry)
     }
 }
 

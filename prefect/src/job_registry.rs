@@ -167,9 +167,55 @@ where
 mod tests {
     use std::sync::Arc;
 
-    use crate::test_util::{TestContext, TestEnvironment};
+    use crate::{
+        test_util::{TestContext, TestEnvironment},
+        Job,
+    };
 
-    use super::JobDef;
+    use super::{JobDef, JobRegistry};
+
+    async fn test_job(job: Job, context: ()) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[test]
+    fn create_job_from_fn() {
+        JobDef::new("test", test_job, false);
+    }
+
+    mod registry_joblist {
+        use super::*;
+
+        #[tokio::test]
+        async fn slice_of_objects() {
+            let job = JobDef::new("test", test_job, false);
+            JobRegistry::new(&[job]);
+        }
+
+        #[tokio::test]
+        async fn array_of_objects() {
+            let job = JobDef::new("test", test_job, false);
+            JobRegistry::new([job]);
+        }
+
+        #[tokio::test]
+        async fn array_of_refs() {
+            let job = JobDef::new("test", test_job, false);
+            JobRegistry::new([&job]);
+        }
+
+        #[tokio::test]
+        async fn vec_of_objects() {
+            let job = JobDef::new("test", test_job, false);
+            JobRegistry::new(vec![job]);
+        }
+
+        #[tokio::test]
+        async fn vec_of_refs() {
+            let job = JobDef::new("test", test_job, false);
+            JobRegistry::new(vec![&job]);
+        }
+    }
 
     #[tokio::test]
     #[should_panic]
