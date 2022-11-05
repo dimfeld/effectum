@@ -271,7 +271,11 @@ where
     }
 
     async fn shutdown(&self) -> Result<()> {
-        // TODO Wait for jobs to shut down
+        let mut running_jobs = self.running_jobs.current_weighted.load(Ordering::Relaxed);
+        while running_jobs > 0 {
+            self.running_jobs.job_finished.notified().await;
+            running_jobs = self.running_jobs.current_weighted.load(Ordering::Relaxed);
+        }
 
         let mut workers = self.queue.workers.write().await;
         workers.remove_worker(self.listener.id)
@@ -395,13 +399,4 @@ async fn wait_for_next_autoheartbeat(time: &Time, expires: i64, heartbeat_increm
     let instant = Instant::now() + std::time::Duration::from_secs(time_from_now.max(0) as u64);
 
     tokio::time::sleep_until(instant).await
-}
-
-#[cfg(test)]
-mod tests {
-    #[tokio::test]
-    #[ignore]
-    async fn shutdown() {
-        todo!();
-    }
 }

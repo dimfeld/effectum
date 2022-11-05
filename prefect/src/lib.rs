@@ -16,13 +16,14 @@ pub mod worker;
 
 use std::{path::Path, sync::Arc, time::Duration};
 
-use db_writer::db_writer_worker;
+use db_writer::{db_writer_worker, DbOperation, DbOperationType};
 use deadpool_sqlite::{Hook, HookError, HookErrorCause};
 use pending_jobs::monitor_pending_jobs;
 use rusqlite::Connection;
 use shared_state::{SharedState, SharedStateData};
 use sqlite_functions::register_functions;
 use tokio::task::JoinHandle;
+use worker::log_error;
 use worker_list::Workers;
 
 pub use error::{Error, Result};
@@ -32,12 +33,20 @@ pub use worker::{Worker, WorkerBuilder};
 
 pub(crate) type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
 
+/// `Retries` controls the exponential backoff behavior when retrying failed jobs.
 #[derive(Debug, Clone)]
 pub struct Retries {
+    /// How many times to retry a job before it is considered to have failed permanently.
     pub max_retries: u32,
-    pub backoff_multiplier: f32,
-    pub backoff_randomization: f32,
+    /// How long to wait before retrying the first time. Defaults to 20 seconds.
     pub backoff_initial_interval: Duration,
+    /// For each retry after the first, the backoff time will be multiplied by `backoff_multiplier ^ current_retry`.
+    /// Defaults to `2`, which will double the backoff time for each retry.
+    pub backoff_multiplier: f32,
+    /// To avoid pathological cases where multiple jobs are retrying simultaneously, a
+    /// random percentage will be added to the backoff time when a job is rescheduled.
+    /// `backoff_randomization` is the maximum percentage to add.
+    pub backoff_randomization: f32,
 }
 
 impl Default for Retries {
@@ -51,16 +60,29 @@ impl Default for Retries {
     }
 }
 
+/// A job to be submitted to the queue.
 #[derive(Debug, Clone)]
 pub struct NewJob {
     pub job_type: String,
+    /// Jobs with higher `priority` will be executed first.
     pub priority: i32,
+    /// Jobs that are expected to take more processing resources can be given a higher weight
+    /// to account for this. A worker counts the job's weight (1, by default) against its
+    /// maximum concurrency when deciding how many jobs it can execute. For example,
+    /// a worker with a `max_concurrency` of 10 would run three jobs at a time if each
+    /// had a weight of three.
+    ///
+    /// For example, a video transcoding task might alter the weight depending on the resolution of
+    /// the video or the processing requirements of the codec for each run.
     pub weight: u32,
     /// When to run the job. `None` means to run it right away.
     pub run_at: Option<time::OffsetDateTime>,
     pub payload: Vec<u8>,
+    /// Retry behavior when the job fails.
     pub retries: Retries,
+    /// How long to allow the job to run before it is considered failed.
     pub timeout: Duration,
+    /// How much extra time a heartbeat will add to the expiration time.
     pub heartbeat_increment: Duration,
 }
 
@@ -186,6 +208,26 @@ impl Queue {
         }
     }
 
+    async fn close_internal(mut tasks: Tasks, state: SharedState, timeout: Duration) -> Result<()> {
+        tasks.close.send(()).ok();
+
+        let res = Self::wait_for_workers_to_stop(&mut tasks, timeout).await;
+
+        state
+            .db_write_tx
+            .send(DbOperation {
+                worker_id: 0,
+                span: tracing::Span::current(),
+                operation: DbOperationType::Close,
+            })
+            .await
+            .ok();
+
+        log_error(tokio::task::spawn_blocking(|| tasks.db_write_worker.join()).await);
+
+        res
+    }
+
     /// Stop the queue, and wait for existing workers to finish.
     pub async fn close(&self, timeout: Duration) -> Result<()> {
         let tasks = {
@@ -193,9 +235,8 @@ impl Queue {
             tasks_holder.take()
         };
 
-        if let Some(mut tasks) = tasks {
-            tasks.close.send(()).ok();
-            Self::wait_for_workers_to_stop(&mut tasks, timeout).await?;
+        if let Some(tasks) = tasks {
+            Self::close_internal(tasks, self.state.clone(), timeout).await?;
         }
 
         Ok(())
@@ -203,10 +244,15 @@ impl Queue {
 }
 
 impl Drop for Queue {
+    /// Try to close the queue cleanly as it's dropped.
     fn drop(&mut self) {
         let mut tasks = self.tasks.lock().unwrap();
         if let Some(tasks) = tasks.take() {
-            tasks.close.send(()).ok();
+            tokio::spawn(Self::close_internal(
+                tasks,
+                self.state.clone(),
+                Duration::from_secs(60),
+            ));
         }
     }
 }
@@ -969,9 +1015,69 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn shutdown() {
-        todo!();
+        let jobs = (0..20)
+            .map(|i| {
+                let timeout = i * 75;
+
+                NewJob {
+                    job_type: "sleep".to_string(),
+                    payload: serde_json::to_vec(&timeout).unwrap(),
+                    timeout: Duration::from_secs(5),
+                    retries: crate::Retries {
+                        max_retries: 2,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let test = TestEnvironment::new().await;
+
+        let job_ids = test.queue.add_jobs(jobs).await.expect("Adding jobs");
+
+        let _worker = test
+            .worker()
+            .min_concurrency(7)
+            .max_concurrency(10)
+            .build()
+            .await
+            .expect("failed to build worker");
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        event!(Level::INFO, "shutting down");
+        test.queue
+            .close(Duration::from_secs(5))
+            .await
+            .expect("failed to close queue");
+
+        let mut successful = 0;
+        let mut pending = 0;
+        for (_, job_id) in job_ids {
+            let status = test
+                .queue
+                .get_job_status(job_id)
+                .await
+                .expect("getting job status");
+            // Jobs should either be done or not started yet. Nothing should be left hanging in a
+            // running state.
+
+            if status.status == "success" {
+                successful += 1;
+            } else if status.status == "pending" {
+                pending += 1;
+            }
+
+            event!(Level::INFO, ?status);
+            assert!(status.status == "success" || status.status == "pending");
+        }
+
+        // We should have run at least some of the jobs, but not all of them yet.
+        event!(Level::INFO, %successful, %pending);
+        assert!(successful > 0);
+        assert!(pending > 0);
     }
 
     mod unimplemented {

@@ -23,6 +23,7 @@ pub(crate) struct DbOperation {
 }
 
 pub(crate) enum DbOperationType {
+    Close,
     CompleteJob(CompleteJobArgs),
     RetryJob(RetryJobArgs),
     GetReadyJobs(GetReadyJobsArgs),
@@ -37,7 +38,8 @@ fn process_operations(
     conn: &mut Connection,
     state: &SharedState,
     operations: &mut Vec<DbOperation>,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut closed = false;
     let mut tx = conn.transaction()?;
     for op in operations.drain(..) {
         let _span = op.span.enter();
@@ -59,6 +61,10 @@ fn process_operations(
                     }
                     DbOperationType::AddJob(args) => add_job(&sp, args),
                     DbOperationType::AddMultipleJobs(args) => add_jobs(&sp, args),
+                    DbOperationType::Close => {
+                        closed = true;
+                        true
+                    }
                 };
 
                 if worked {
@@ -74,7 +80,7 @@ fn process_operations(
     }
     tx.commit()?;
 
-    Ok(())
+    Ok(closed)
 }
 
 pub(crate) fn db_writer_worker(
@@ -89,7 +95,7 @@ pub(crate) fn db_writer_worker(
 
         match operations_rx.blocking_recv() {
             Some(op) => operations.push(op),
-            None => return,
+            None => break,
         }
 
         // Get additional operations, if any are waiting.
@@ -103,6 +109,12 @@ pub(crate) fn db_writer_worker(
             }
         }
 
-        log_error(process_operations(&mut conn, &state, &mut operations));
+        match process_operations(&mut conn, &state, &mut operations) {
+            Ok(true) => break,
+            Ok(false) => {}
+            Err(e) => event!(Level::ERROR, %e),
+        }
     }
+
+    log_error(conn.close().map_err(|(_, e)| e));
 }
