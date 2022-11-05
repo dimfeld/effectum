@@ -1,18 +1,22 @@
-pub mod add_job;
+#![warn(missing_docs)]
+//! A SQLite-based task queue library that allows running background jobs without requiring
+//! external dependencies.
+
+mod add_job;
 mod error;
-pub mod job_status;
+mod job_status;
 mod migrations;
 mod shared_state;
 mod worker_list;
 
 mod db_writer;
-pub mod job;
-pub mod job_registry;
+mod job;
+mod job_registry;
 mod pending_jobs;
 mod sqlite_functions;
 #[cfg(test)]
 mod test_util;
-pub mod worker;
+mod worker;
 
 use std::{path::Path, sync::Arc, time::Duration};
 
@@ -63,6 +67,7 @@ impl Default for Retries {
 /// A job to be submitted to the queue.
 #[derive(Debug, Clone)]
 pub struct NewJob {
+    /// The name of the job, which matches the name used in the [JobDef] for the job.
     pub job_type: String,
     /// Jobs with higher `priority` will be executed first.
     pub priority: i32,
@@ -77,6 +82,7 @@ pub struct NewJob {
     pub weight: u32,
     /// When to run the job. `None` means to run it right away.
     pub run_at: Option<time::OffsetDateTime>,
+    /// The payload to pass to the job when it runs.
     pub payload: Vec<u8>,
     /// Retry behavior when the job fails.
     pub retries: Retries,
@@ -104,10 +110,11 @@ impl Default for NewJob {
 struct Tasks {
     close: tokio::sync::watch::Sender<()>,
     worker_count_rx: tokio::sync::watch::Receiver<usize>,
-    pending_jobs_monitor: JoinHandle<()>,
+    _pending_jobs_monitor: JoinHandle<()>,
     db_write_worker: std::thread::JoinHandle<()>,
 }
 
+/// The queue itself, which consists of the SQLite connection and tasks to monitor running jobs.
 pub struct Queue {
     state: SharedState,
     tasks: std::sync::Mutex<Option<Tasks>>,
@@ -180,7 +187,7 @@ impl Queue {
             tasks: std::sync::Mutex::new(Some(Tasks {
                 close: close_tx,
                 worker_count_rx,
-                pending_jobs_monitor,
+                _pending_jobs_monitor: pending_jobs_monitor,
                 db_write_worker,
             })),
         };
@@ -264,9 +271,9 @@ mod tests {
     use tracing::{event, Level};
 
     use crate::{
-        job_registry::{JobDef, JobRegistry},
+        job_registry::JobDef,
         test_util::{
-            create_test_queue, job_list, wait_for, wait_for_job, wait_for_job_status, TestContext,
+            create_test_queue, job_list, wait_for_job, wait_for_job_status, TestContext,
             TestEnvironment,
         },
         worker::Worker,

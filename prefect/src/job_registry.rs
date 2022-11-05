@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, fmt::Debug, fmt::Display, panic::AssertUnwindSafe, pin::Pin, sync::Arc};
+use std::{borrow::Borrow, fmt::Debug, fmt::Display, panic::AssertUnwindSafe, sync::Arc};
 
 use ahash::HashMap;
 use futures::{Future, FutureExt};
@@ -10,6 +10,7 @@ use crate::{job::Job, worker::log_error, SmartString};
 pub(crate) type JobFn<CONTEXT> =
     Arc<dyn Fn(Job, CONTEXT) -> tokio::task::JoinHandle<()> + Send + Sync + 'static>;
 
+/// A list of jobs that can be run by a worker.
 pub struct JobRegistry<CONTEXT>
 where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
@@ -21,6 +22,7 @@ impl<CONTEXT> JobRegistry<CONTEXT>
 where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
+    /// Create a new job registry from a list of [JobDefs](JobDef).
     pub fn new<JOBLIST>(jobs: JOBLIST) -> JobRegistry<CONTEXT>
     where
         JOBLIST: IntoIterator,
@@ -37,6 +39,7 @@ where
         JobRegistry { jobs }
     }
 
+    /// Add a [JobDef] to an existing registry.
     pub fn add(&mut self, job: &JobDef<CONTEXT>) {
         self.jobs
             .entry(job.name.clone())
@@ -47,20 +50,52 @@ where
     }
 }
 
+/// A definition of a job, including the name of the job, the function that runs the job, and
+/// other settings.
+///
+/// The function that runs the job should be an `async` function that takes a [Job] and a context object.
+/// All jobs for a particular worker must have the same context type.
+///
+/// The function can be either a normal function or a closure.
+///
+/// ```
+/// # use prefect::*;
+/// # use std::sync::Arc;
+/// #[derive(Debug)]
+/// pub struct JobContext {
+///   // database pool or other things here
+/// }
+///
+/// let job = JobDef::builder("a_job", |job: Job, context: Arc<JobContext>| async move {
+///   // do some work
+///   Ok::<_, Error>("optional info about the success")
+/// }).build();
+///
+/// async fn another_job(job: Job, context: Arc<JobContext>) -> Result<String, Error> {
+///   // do some work
+///   Ok("optional info about the success".to_string())
+/// }
+///
+/// let another_job = JobDef::builder("another_job", another_job)
+///     .autoheartbeat(true)
+///     .build();
+/// ```
 #[derive(Clone)]
 pub struct JobDef<CONTEXT>
 where
     CONTEXT: Send + Debug + Clone + 'static,
 {
-    pub name: SmartString,
-    pub runner: JobFn<CONTEXT>,
-    pub autoheartbeat: bool,
+    pub(crate) name: SmartString,
+    pub(crate) runner: JobFn<CONTEXT>,
+    pub(crate) autoheartbeat: bool,
 }
 
 impl<CONTEXT> JobDef<CONTEXT>
 where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
+    /// Create a new [JobDef], passing all the possible fields. Generally it's easier to use
+    /// [JobDef::builder].
     pub fn new<F, Fut, T, E>(
         name: impl Into<SmartString>,
         runner: F,
@@ -129,6 +164,7 @@ where
         }
     }
 
+    /// Create a [JobDefBuilder] for this job.
     pub fn builder<F, Fut, T, E>(name: impl Into<SmartString>, runner: F) -> JobDefBuilder<CONTEXT>
     where
         F: Fn(Job, CONTEXT) -> Fut + Send + Sync + Clone + 'static,
@@ -142,6 +178,7 @@ where
     }
 }
 
+/// A builder object for a [JobDef].
 pub struct JobDefBuilder<CONTEXT>
 where
     CONTEXT: Send + Debug + Clone + 'static,
@@ -153,11 +190,13 @@ impl<CONTEXT> JobDefBuilder<CONTEXT>
 where
     CONTEXT: Send + Debug + Clone + 'static,
 {
+    /// Set whether the job should automatically send heartbeats while it runs.
     pub fn autoheartbeat(mut self, autoheartbeat: bool) -> Self {
         self.def.autoheartbeat = autoheartbeat;
         self
     }
 
+    /// Consume the builder, returning a [JobDef].
     pub fn build(self) -> JobDef<CONTEXT> {
         self.def
     }
@@ -174,7 +213,7 @@ mod tests {
 
     use super::{JobDef, JobRegistry};
 
-    async fn test_job(job: Job, context: ()) -> Result<(), String> {
+    async fn test_job(_job: Job, _context: ()) -> Result<(), String> {
         Ok(())
     }
 

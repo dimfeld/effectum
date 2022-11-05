@@ -15,9 +15,10 @@ use crate::db_writer::retry::RetryJobArgs;
 use crate::db_writer::{DbOperation, DbOperationType};
 use crate::job_status::RunInfo;
 use crate::shared_state::SharedState;
-use crate::worker::log_error;
+use crate::worker::{log_error, WorkerId};
 use crate::{Error, Result, SmartString};
 
+/// Information about a running job.
 #[derive(Debug, Clone)]
 pub struct Job(pub Arc<JobData>);
 
@@ -35,23 +36,36 @@ impl Display for Job {
     }
 }
 
+/// Information about a running job. This is usually accessed through the [Job] type,
+/// which wraps this in an [Arc].
 pub struct JobData {
+    /// The id of this job.
     pub id: Uuid,
     pub(crate) job_id: i64,
-    pub worker_id: u64,
+    /// The ID of the [Worker] that is running this job.
+    pub worker_id: WorkerId,
+    /// How many seconds a heartbeat can extend the expiration time.
     pub heartbeat_increment: i32,
+    /// The type of the job.
     pub job_type: String,
+    /// The job's priority.
     pub priority: i32,
+    /// How much this job counts against the worker's concurrency limit.
     pub weight: u16,
+    /// The payload of the job. JSON payloads can be parsed using the [JobData::json_payload] function.
     pub payload: Vec<u8>,
+    /// The timestamp, in seconds, when this job expires.
     pub expires: AtomicI64,
 
+    /// When the job was started.
     pub start_time: OffsetDateTime,
 
-    pub backoff_multiplier: f64,
-    pub backoff_randomization: f64,
-    pub backoff_initial_interval: i32,
+    pub(crate) backoff_multiplier: f64,
+    pub(crate) backoff_randomization: f64,
+    pub(crate) backoff_initial_interval: i32,
+    /// How many times this job has been tried already. On the first run, this will be 0.
     pub current_try: i32,
+    /// The number of times this job can be retried before giving up permanently.
     pub max_retries: i32,
 
     pub(crate) done: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
@@ -176,6 +190,7 @@ impl JobData {
         now >= expired
     }
 
+    /// Deserialize a JSON payload into the requested type.
     pub fn json_payload<'a, T: Deserialize<'a>>(&'a self) -> Result<T, serde_json::Error> {
         serde_json::from_slice(self.payload.as_slice())
     }

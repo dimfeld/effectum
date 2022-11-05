@@ -1,4 +1,4 @@
-use eyre::{eyre, Result};
+use eyre::Result;
 use futures::future::try_join_all;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
@@ -28,7 +28,7 @@ struct Args {
     num_submit_tasks: usize,
 }
 
-async fn empty_task(job: prefect::Job, context: ()) -> Result<(), String> {
+async fn empty_task(_job: prefect::Job, _context: ()) -> Result<(), String> {
     Ok(())
 }
 
@@ -68,7 +68,8 @@ async fn run() -> Result<()> {
     let workers = futures::future::try_join_all(
         (0..args.num_workers)
             .map(|_| {
-                prefect::Worker::builder(&registry, &queue, ())
+                prefect::Worker::builder(&queue, ())
+                    .registry(&registry)
                     .min_concurrency(min_concurrency)
                     .max_concurrency(args.worker_max_concurrency)
                     .build()

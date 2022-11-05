@@ -1,11 +1,15 @@
 use deadpool_sqlite::InteractError;
 
+/// A [std::result::Result] whose error type defaults to [Error].
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// Errors that can be returned from the queue.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// An error occurred while updating the database to a new schema version.
     #[error("Migration error: {0}")]
     Migration(#[from] rusqlite_migration::Error),
+    /// An error occurred while opening the database.
     #[error("Error opening database: {0}")]
     OpenDatabase(rusqlite::Error),
     #[error("Error opening database: {0}")]
@@ -24,6 +28,7 @@ pub enum Error {
     Panic(#[from] tokio::task::JoinError),
     #[error("Internal error: {0}")]
     DbInteract(String),
+    /// When requesting a job status, the job ID was not found.
     #[error("Job not found")]
     NotFound,
     #[error("Error decoding job run info {0}")]
@@ -34,12 +39,13 @@ pub enum Error {
     TimestampOutOfRange(&'static str),
     #[error("Attempted to finish already-finished job")]
     JobAlreadyConsumed,
+    /// The operation timed out. This is mostly used when the queue fails to shut down in a timely
+    /// fashion.
     #[error("Timed out")]
     Timeout,
+    /// The current job has expired.
     #[error("Job expired")]
     Expired,
-    #[error("Job expired while recording success")]
-    ExpiredWhileRecordingSuccess,
     #[error("Worker {0} not found")]
     WorkerNotFound(u64),
     #[error("Queue closed unexpectedly")]

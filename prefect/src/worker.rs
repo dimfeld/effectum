@@ -14,14 +14,17 @@ use crate::shared_state::{SharedState, Time};
 use crate::worker_list::ListeningWorker;
 use crate::{Error, Queue, Result, SmartString};
 
-type WorkerId = u64;
+/// The internal ID for a worker.
+pub type WorkerId = u64;
 
 struct CancellableTask {
     close_tx: oneshot::Sender<()>,
     join_handle: JoinHandle<()>,
 }
 
+/// A worker that runs jobs from the queue.
 pub struct Worker {
+    /// The worker's internal ID.
     pub id: WorkerId,
     counts: Arc<RunningJobs>,
     worker_list_task: Option<CancellableTask>,
@@ -33,6 +36,8 @@ pub struct WorkerCounts {
 }
 
 impl Worker {
+    /// Unregister a worker from the queue. It will still finish any jobs it is currently running,
+    /// but will no longer take new jobs.
     pub async fn unregister(mut self, timeout: Option<std::time::Duration>) -> Result<()> {
         if let Some(task) = self.worker_list_task.take() {
             task.close_tx.send(()).ok();
@@ -47,13 +52,15 @@ impl Worker {
         Ok(())
     }
 
-    pub fn builder<'a, CONTEXT>(queue: &'a Queue, context: CONTEXT) -> WorkerBuilder<'a, CONTEXT>
+    /// Create a [WorkerBuilder] to build a new worker.
+    pub fn builder<CONTEXT>(queue: &Queue, context: CONTEXT) -> WorkerBuilder<CONTEXT>
     where
         CONTEXT: Send + Sync + Debug + Clone + 'static,
     {
         WorkerBuilder::new(queue, context)
     }
 
+    /// Return some counts about the number of jobs this worker has processed.
     pub fn counts(&self) -> WorkerCounts {
         WorkerCounts {
             started: self.counts.started.load(Ordering::Relaxed),
@@ -71,6 +78,7 @@ impl Drop for Worker {
     }
 }
 
+/// A builder object for a [Worker].
 pub struct WorkerBuilder<'a, CONTEXT>
 where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
@@ -95,6 +103,7 @@ impl<'a, CONTEXT> WorkerBuilder<'a, CONTEXT>
 where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
+    /// Create a new [WorkerBuilder] for a particular [Queue].
     pub fn new(queue: &'a Queue, context: CONTEXT) -> Self {
         Self {
             registry: None,
@@ -107,7 +116,7 @@ where
         }
     }
 
-    /// Get the job definitions from this JobRegistry object.
+    /// Get the job definitions from this [JobRegistry].
     pub fn registry(mut self, registry: &'a JobRegistry<CONTEXT>) -> Self {
         if self.job_defs.is_some() {
             panic!("Cannot set both registry and job_defs");
@@ -117,7 +126,7 @@ where
         self
     }
 
-    /// Get the job definitions from this list of jobs.
+    /// Get the job definitions from this list of [JobDefs](JobDef).
     pub fn jobs(mut self, jobs: impl Into<Vec<JobDef<CONTEXT>>>) -> Self {
         if self.job_defs.is_some() {
             panic!("Cannot set both registry and job_defs");
@@ -155,18 +164,23 @@ where
         self
     }
 
+    /// Set the minimum concurrency for this worker. When the number of running jobs falls below
+    /// this number, the worker will try to fetch more jobs, up to `max_concurrency`.
+    /// Defaults to the same as max_concurrency.
     pub fn min_concurrency(mut self, min_concurrency: u16) -> Self {
         assert!(min_concurrency > 0);
         self.min_concurrency = Some(min_concurrency);
         self
     }
 
+    /// The maximum number of jobs that the worker will run concurrently. Defaults to 1.
     pub fn max_concurrency(mut self, max_concurrency: u16) -> Self {
         assert!(max_concurrency > 0);
         self.max_concurrency = Some(max_concurrency);
         self
     }
 
+    /// Consume this [WorkerBuilder] and create a new [Worker].
     pub async fn build(self) -> Result<Worker> {
         let job_defs: HashMap<SmartString, JobDef<CONTEXT>> = if let Some(job_defs) = self.job_defs
         {
