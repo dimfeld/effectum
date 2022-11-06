@@ -1,7 +1,13 @@
 [package]
 name = "prefect"
+description = "An embeddable task queue based on SQLite"
 version = "0.1.0"
+authors = ["Daniel Imfeld"]
 edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dimfeld/prefect"
+keywords = ["job", "task", "queue", "sqlite"]
+categories = ["asynchronous"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
