@@ -36,7 +36,7 @@ async fn submit_task(
     queue: Arc<Queue>,
     batch_size: usize,
     num_batches: usize,
-) -> Result<Vec<Vec<(i64, Uuid)>>> {
+) -> Result<Vec<Vec<Uuid>>> {
     let mut job_ids = Vec::with_capacity(num_batches);
     for _ in 0..num_batches {
         let jobs = (0..batch_size)
@@ -123,7 +123,7 @@ async fn run() -> Result<()> {
     let mut checked = 0;
     for task in values {
         for batch in task.unwrap() {
-            for (_, uuid) in batch {
+            for uuid in batch {
                 let job = queue.get_job_status(uuid).await?;
                 assert_eq!(job.state, JobState::Succeeded);
                 checked += 1;

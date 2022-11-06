@@ -13,7 +13,7 @@ use crate::{
 
 impl Queue {
     /// Submit a job to the queue
-    pub async fn add_job(&self, job_config: NewJob) -> Result<(i64, Uuid)> {
+    pub async fn add_job(&self, job_config: NewJob) -> Result<Uuid> {
         let job_type = job_config.job_type.clone();
         let now = self.state.time.now();
         let run_time = job_config.run_at.unwrap_or(now);
@@ -52,7 +52,7 @@ impl Queue {
     }
 
     /// Submit multiple jobs to the queue
-    pub async fn add_jobs(&self, jobs: Vec<NewJob>) -> Result<Vec<(i64, Uuid)>> {
+    pub async fn add_jobs(&self, jobs: Vec<NewJob>) -> Result<Vec<Uuid>> {
         let mut ready_job_types: HashSet<String> = HashSet::default();
         let mut pending_job_types: HashMap<String, i64> = HashMap::default();
 
@@ -120,7 +120,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (_, external_id) = queue.add_job(job).await.unwrap();
+        let external_id = queue.add_job(job).await.unwrap();
         let after_start_time = queue.state.time.now();
         let status = queue.get_job_status(external_id).await.unwrap();
 
@@ -144,7 +144,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (_, external_id) = queue.add_job(job).await.unwrap();
+        let external_id = queue.add_job(job).await.unwrap();
         let status = queue.get_job_status(external_id).await.unwrap();
 
         assert_eq!(status.orig_run_at, job_time);

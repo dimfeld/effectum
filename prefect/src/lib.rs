@@ -295,7 +295,7 @@ mod tests {
 
         let _worker = test.worker().build().await.expect("failed to build worker");
 
-        let (_, job_id) = test
+        let job_id = test
             .queue
             .add_job(NewJob {
                 job_type: "counter".to_string(),
@@ -332,7 +332,7 @@ mod tests {
             .await
             .expect("failed to add job");
 
-        for (_, job_id) in ids {
+        for job_id in ids {
             wait_for_job("job to run", &test.queue, job_id).await;
         }
     }
@@ -341,7 +341,7 @@ mod tests {
     async fn worker_gets_pending_jobs_when_starting() {
         let test = TestEnvironment::new().await;
 
-        let (_, job_id) = test
+        let job_id = test
             .queue
             .add_job(NewJob {
                 job_type: "counter".to_string(),
@@ -365,7 +365,7 @@ mod tests {
         let run_at2 = run_at1 + Duration::from_secs(10);
 
         // Schedule job 2 first, to ensure that it's actually sorting by run_at
-        let (_, job_id2) = test
+        let job_id2 = test
             .queue
             .add_job(NewJob {
                 job_type: "push_payload".to_string(),
@@ -377,7 +377,7 @@ mod tests {
             .expect("failed to add job 2");
         event!(Level::INFO, run_at=%run_at2, id=%job_id2, "scheduled job 2");
 
-        let (_, job_id) = test
+        let job_id = test
             .queue
             .add_job(NewJob {
                 job_type: "push_payload".to_string(),
@@ -437,8 +437,8 @@ mod tests {
             .await
             .expect("Failed to add jobs");
 
-        let job_id2 = ids[0].1;
-        let job_id = ids[1].1;
+        let job_id2 = ids[0];
+        let job_id = ids[1];
 
         event!(Level::INFO, run_at=%run_at1, id=%job_id, "scheduled job 1");
         event!(Level::INFO, run_at=%run_at2, id=%job_id2, "scheduled job 2");
@@ -473,7 +473,7 @@ mod tests {
 
             let _worker = test.worker().build().await.expect("failed to build worker");
 
-            let (_, job_id) = test
+            let job_id = test
                 .queue
                 .add_job(NewJob {
                     job_type: "retry".to_string(),
@@ -514,7 +514,7 @@ mod tests {
 
             let _worker = test.worker().build().await.expect("failed to build worker");
 
-            let (_, job_id) = test
+            let job_id = test
                 .queue
                 .add_job(NewJob {
                     job_type: "retry".to_string(),
@@ -569,7 +569,7 @@ mod tests {
 
         let _worker = test.worker().build().await.expect("failed to build worker");
 
-        let (_, job_id) = test
+        let job_id = test
             .queue
             .add_job(NewJob {
                 job_type: "explicit_complete".to_string(),
@@ -620,8 +620,7 @@ mod tests {
                     ..Default::default()
                 })
                 .await
-                .expect("failed to add job")
-                .1,
+                .expect("failed to add job"),
         );
 
         let _worker = Worker::builder(&test.queue, test.context.clone())
@@ -656,11 +655,10 @@ mod tests {
                     ..Default::default()
                 })
                 .await
-                .expect("failed to add job")
-                .1,
+                .expect("failed to add job"),
         );
 
-        for (_, job_id) in run_jobs {
+        for job_id in run_jobs {
             event!(Level::INFO, %job_id, "checking job that should run");
             let status = wait_for_job("job to run", &test.queue, job_id).await;
             assert!(status.run_info[0].success);
@@ -705,8 +703,7 @@ mod tests {
                     ..Default::default()
                 })
                 .await
-                .expect("failed to add job")
-                .1,
+                .expect("failed to add job"),
         );
 
         let _worker = Worker::builder(&test.queue, test.context.clone())
@@ -741,11 +738,10 @@ mod tests {
                     ..Default::default()
                 })
                 .await
-                .expect("failed to add job")
-                .1,
+                .expect("failed to add job"),
         );
 
-        for (_, job_id) in run_jobs {
+        for job_id in run_jobs {
             event!(Level::INFO, %job_id, "checking job that should run");
             let status = wait_for_job("job to run", &test.queue, job_id).await;
             assert!(status.run_info[0].success);
@@ -765,7 +761,7 @@ mod tests {
         // the next run of the job could assign it to the same worker again.
         let test = TestEnvironment::new().await;
         let _worker = test.worker().build().await.expect("failed to build worker");
-        let (_, job_id) = test
+        let job_id = test
             .queue
             .add_job(NewJob {
                 job_type: "sleep".to_string(),
@@ -810,7 +806,7 @@ mod tests {
         test.registry.add(&job_def);
         let _worker = test.worker().build().await.expect("failed to build worker");
 
-        let (_, job_id) = test
+        let job_id = test
             .queue
             .add_job(NewJob {
                 job_type: "manual_heartbeat".to_string(),
@@ -844,7 +840,7 @@ mod tests {
         test.registry.add(&job_def);
         let _worker = test.worker().build().await.expect("failed to build worker");
 
-        let (_, job_id) = test
+        let job_id = test
             .queue
             .add_job(NewJob {
                 job_type: "auto_heartbeat".to_string(),
@@ -869,7 +865,7 @@ mod tests {
 
         // Add two job. The low priority job has an earlier run_at time so it would normally run first,
         // but the high priority job should actually run first due to running in priority order.
-        let (_, low_prio) = test
+        let low_prio = test
             .queue
             .add_job(NewJob {
                 job_type: "push_payload".to_string(),
@@ -881,7 +877,7 @@ mod tests {
             .await
             .expect("adding low priority job");
 
-        let (_, high_prio) = test
+        let high_prio = test
             .queue
             .add_job(NewJob {
                 job_type: "push_payload".to_string(),
@@ -939,7 +935,7 @@ mod tests {
         test.registry.add(&job_def);
         let _worker = test.worker().build().await.expect("failed to build worker");
 
-        let (_, job_id) = test
+        let job_id = test
             .queue
             .add_job(NewJob {
                 job_type: "checkpoint_job".to_string(),
@@ -983,8 +979,7 @@ mod tests {
                         ..Default::default()
                     })
                     .await
-                    .expect("Adding job")
-                    .1;
+                    .expect("Adding job");
                 jobs.push(job_id);
             }
 
@@ -1016,8 +1011,7 @@ mod tests {
                         ..Default::default()
                     })
                     .await
-                    .expect("Adding job")
-                    .1;
+                    .expect("Adding job");
                 jobs.push(job_id);
             }
 
@@ -1066,8 +1060,7 @@ mod tests {
                         ..Default::default()
                     })
                     .await
-                    .expect("Adding job")
-                    .1;
+                    .expect("Adding job");
                 jobs.push(job_id);
             }
 
@@ -1154,7 +1147,7 @@ mod tests {
 
         let mut successful = 0;
         let mut pending = 0;
-        for (_, job_id) in job_ids {
+        for job_id in job_ids {
             let status = test
                 .queue
                 .get_job_status(job_id)

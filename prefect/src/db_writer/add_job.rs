@@ -10,11 +10,11 @@ use crate::Result;
 pub(crate) struct AddJobArgs {
     pub job: NewJob,
     pub now: OffsetDateTime,
-    pub result_tx: oneshot::Sender<Result<(i64, Uuid)>>,
+    pub result_tx: oneshot::Sender<Result<Uuid>>,
 }
 
 pub(crate) struct AddMultipleJobsResult {
-    pub ids: Vec<(i64, Uuid)>,
+    pub ids: Vec<Uuid>,
 }
 
 pub(crate) struct AddMultipleJobsArgs {
@@ -48,7 +48,7 @@ fn execute_add_job_stmt(
     job_config: &NewJob,
     now: OffsetDateTime,
     from_recurring_job: Option<i64>,
-) -> Result<(i64, Uuid)> {
+) -> Result<Uuid> {
     let external_id: Uuid = ulid::Ulid::new().into();
     let run_time = job_config.run_at.unwrap_or(now).unix_timestamp();
 
@@ -77,10 +77,10 @@ fn execute_add_job_stmt(
         "$run_at": run_time,
     })?;
 
-    Ok((job_id, external_id))
+    Ok(external_id)
 }
 
-fn do_add_job(tx: &Connection, job_config: &NewJob, now: OffsetDateTime) -> Result<(i64, Uuid)> {
+fn do_add_job(tx: &Connection, job_config: &NewJob, now: OffsetDateTime) -> Result<Uuid> {
     let mut jobs_stmt = tx.prepare_cached(INSERT_JOBS_QUERY)?;
     let mut active_jobs_stmt = tx.prepare_cached(INSERT_ACTIVE_JOBS_QUERY)?;
 
