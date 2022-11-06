@@ -12,6 +12,7 @@ use crate::{
 };
 
 impl Queue {
+    /// Submit a job to the queue
     pub async fn add_job(&self, job_config: NewJob) -> Result<(i64, Uuid)> {
         let job_type = job_config.job_type.clone();
         let now = self.state.time.now();
@@ -50,6 +51,7 @@ impl Queue {
         Ok(ids)
     }
 
+    /// Submit multiple jobs to the queue
     pub async fn add_jobs(&self, jobs: Vec<NewJob>) -> Result<Vec<(i64, Uuid)>> {
         let mut ready_job_types: HashSet<String> = HashSet::default();
         let mut pending_job_types: HashMap<String, i64> = HashMap::default();

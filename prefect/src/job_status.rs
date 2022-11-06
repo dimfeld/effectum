@@ -1,9 +1,8 @@
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use smallvec::SmallVec;
 use std::fmt::Debug;
 use time::{Duration, OffsetDateTime};
-use tracing::{event, Level};
 use uuid::Uuid;
 
 use crate::{Error, Queue, Result};
@@ -48,6 +47,7 @@ pub struct NumActiveJobs {
 }
 
 impl Queue {
+    /// Return information about a job
     pub async fn get_job_status(&self, external_id: Uuid) -> Result<JobStatus> {
         let conn = self.state.read_conn_pool.get().await?;
 
@@ -76,7 +76,7 @@ impl Queue {
                     let started_at = row
                         .get_ref(13)?
                         .as_i64_or_null()
-                        .map_err(|e| Error::FromSql(e, "started_at"))?
+                        .map_err(|e| Error::ColumnType(e.into(), "started_at"))?
                         .map(|i| {
                             OffsetDateTime::from_unix_timestamp(i)
                                 .map_err(|_| Error::TimestampOutOfRange("started_at"))
@@ -86,7 +86,7 @@ impl Queue {
                     let finished_at = row
                         .get_ref(14)?
                         .as_i64_or_null()
-                        .map_err(|e| Error::FromSql(e, "finished_at"))?
+                        .map_err(|e| Error::ColumnType(e.into(), "finished_at"))?
                         .map(|i| {
                             OffsetDateTime::from_unix_timestamp(i)
                                 .map_err(|_| Error::TimestampOutOfRange("finished_at"))
@@ -96,7 +96,7 @@ impl Queue {
                     let expires_at = row
                         .get_ref(15)?
                         .as_i64_or_null()
-                        .map_err(|e| Error::FromSql(e, "expires_at"))?
+                        .map_err(|e| Error::ColumnType(e.into(), "expires_at"))?
                         .map(|i| {
                             OffsetDateTime::from_unix_timestamp(i)
                                 .map_err(|_| Error::TimestampOutOfRange("expires_at"))
@@ -106,7 +106,7 @@ impl Queue {
                     let run_info_str = row
                         .get_ref(16)?
                         .as_str_or_null()
-                        .map_err(|e| Error::FromSql(e, "run_info"))?;
+                        .map_err(|e| Error::ColumnType(e.into(), "run_info"))?;
                     let run_info: SmallVec<[RunInfo<Box<RawValue>>; 4]> = match run_info_str {
                         Some(run_info_str) => {
                             serde_json::from_str(run_info_str).map_err(Error::InvalidJobRunInfo)?
@@ -125,7 +125,7 @@ impl Queue {
                         run_at: row
                             .get_ref(5)?
                             .as_i64_or_null()
-                            .map_err(|e| Error::FromSql(e, "run_at"))?
+                            .map_err(|e| Error::ColumnType(e.into(), "run_at"))?
                             .map(OffsetDateTime::from_unix_timestamp)
                             .transpose()
                             .map_err(|_| Error::TimestampOutOfRange("run_at"))?,
@@ -155,6 +155,7 @@ impl Queue {
         Ok(status)
     }
 
+    /// Return counts about the number of jobs running and waiting to run.
     pub async fn num_active_jobs(&self) -> Result<NumActiveJobs> {
         let conn = self.state.read_conn_pool.get().await?;
         let (total, running): (i64, i64) = conn

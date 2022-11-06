@@ -126,11 +126,11 @@ impl Queue {
     /// Note that if you use an existing database file, this queue will set the journal style to
     /// WAL mode.
     pub async fn new(file: &Path) -> Result<Queue> {
-        let mut conn = Connection::open(file).map_err(Error::OpenDatabase)?;
+        let mut conn = Connection::open(file).map_err(Error::open_database)?;
         conn.pragma_update(None, "journal", "wal")
-            .map_err(Error::OpenDatabase)?;
+            .map_err(Error::open_database)?;
         conn.pragma_update(None, "synchronous", "normal")
-            .map_err(Error::OpenDatabase)?;
+            .map_err(Error::open_database)?;
 
         register_functions(&mut conn)?;
         crate::migrations::migrate(&mut conn)?;
@@ -138,7 +138,8 @@ impl Queue {
         let (close_tx, close_rx) = tokio::sync::watch::channel(());
 
         let read_conn_pool = deadpool_sqlite::Config::new(file)
-            .builder(deadpool_sqlite::Runtime::Tokio1)?
+            .builder(deadpool_sqlite::Runtime::Tokio1)
+            .map_err(Error::open_database)?
             .recycle_timeout(Some(Duration::from_secs(5 * 60)))
             .post_create(Hook::async_fn(move |conn, _| {
                 Box::pin(async move {
@@ -149,7 +150,8 @@ impl Queue {
                     Ok(())
                 })
             }))
-            .build()?;
+            .build()
+            .map_err(Error::open_database)?;
 
         let (worker_count_tx, worker_count_rx) = tokio::sync::watch::channel(0);
         let (pending_jobs_tx, pending_jobs_rx) = tokio::sync::mpsc::channel(10);

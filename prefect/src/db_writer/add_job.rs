@@ -1,11 +1,9 @@
-use ahash::{HashMap, HashSet};
+use rusqlite::Statement;
 use rusqlite::{named_params, Connection};
-use rusqlite::{Statement, Transaction};
 use time::OffsetDateTime;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use crate::shared_state::SharedState;
 use crate::NewJob;
 use crate::Result;
 

@@ -42,7 +42,7 @@ pub struct JobData {
     /// The id of this job.
     pub id: Uuid,
     pub(crate) job_id: i64,
-    /// The ID of the [Worker] that is running this job.
+    /// The ID of the [Worker](crate::worker::Worker) that is running this job.
     pub worker_id: WorkerId,
     /// How many seconds a heartbeat can extend the expiration time.
     pub heartbeat_increment: i32,

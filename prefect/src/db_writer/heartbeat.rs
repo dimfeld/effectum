@@ -1,4 +1,4 @@
-use rusqlite::{named_params, params, Connection, OptionalExtension, Transaction};
+use rusqlite::{named_params, params, Connection, OptionalExtension};
 use tokio::sync::oneshot;
 
 use crate::Result;
@@ -89,7 +89,7 @@ fn do_write_checkpoint(
 
     let mut payload_update_stmt =
         tx.prepare_cached(r##"UPDATE jobs SET checkpointed_payload=?2 WHERE job_id=?1"##)?;
-    let altered = payload_update_stmt.execute(params![job_id, payload])?;
+    payload_update_stmt.execute(params![job_id, payload])?;
 
     Ok(actual_new_expire_time)
 }

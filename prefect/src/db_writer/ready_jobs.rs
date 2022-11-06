@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use rusqlite::{named_params, types::Value, Connection, Transaction};
+use rusqlite::{named_params, types::Value, Connection};
 use time::OffsetDateTime;
 use tokio::sync::Mutex;
 use tracing::{event, Level};

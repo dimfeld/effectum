@@ -1,14 +1,10 @@
-use std::sync::{atomic::AtomicU32, Arc};
+use std::sync::Arc;
 
-use ahash::{HashMap, HashSet};
-use tokio::{
-    select,
-    sync::{broadcast, watch, Notify},
-    time::{Duration, Instant},
-};
+use ahash::HashMap;
+use tokio::sync::{watch, Notify};
 
 use crate::SmartString;
-use crate::{shared_state::SharedState, Error, NewJob, Queue, Result};
+use crate::{Error, Result};
 
 pub(crate) struct ListeningWorker {
     pub id: u64,

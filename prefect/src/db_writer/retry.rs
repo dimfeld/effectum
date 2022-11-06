@@ -1,4 +1,4 @@
-use rusqlite::{named_params, params, Connection, Transaction};
+use rusqlite::{named_params, params, Connection};
 use tokio::sync::oneshot;
 
 use crate::{Error, Result};

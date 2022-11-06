@@ -1,13 +1,13 @@
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::shared_state::SharedState;
 use crate::worker::log_error;
-use rusqlite::{named_params, params, Connection, Transaction};
+use rusqlite::Connection;
 use tracing::{event, instrument, Level};
 
 use self::add_job::{add_job, add_jobs, AddJobArgs, AddMultipleJobsArgs};
 use self::complete::{complete_job, CompleteJobArgs};
 use self::heartbeat::{write_checkpoint, write_heartbeat, WriteCheckpointArgs, WriteHeartbeatArgs};
-use self::ready_jobs::{get_ready_jobs, GetReadyJobsArgs, ReadyJob};
+use self::ready_jobs::{get_ready_jobs, GetReadyJobsArgs};
 use self::retry::{retry_job, RetryJobArgs};
 
 pub(crate) mod add_job;
