@@ -1,6 +1,55 @@
 #![warn(missing_docs)]
 //! A SQLite-based task queue library that allows running background jobs without requiring
 //! external dependencies.
+//!
+//! ```no_run
+//! # use std::sync::Arc;
+//! # use std::path::PathBuf;
+//! # use serde_json::json;
+//! use prefect::{Error, Job, JobState, JobRunner, RunningJob, Queue, Worker};
+//!
+//! #[derive(Debug)]
+//! pub struct JobContext {
+//!    // database pool or other things here
+//! }
+//!
+//! async fn remind_me_job(job: RunningJob, context: Arc<JobContext>) -> Result<(), Error> {
+//!     // do something with the job
+//!     Ok(())
+//! }
+//!
+//! #[tokio::main(flavor = "current_thread")]
+//! async fn main() -> Result<(), Error> {
+//!   // Create a queue
+//!   let queue = Queue::new(&PathBuf::from("prefect.db")).await?;
+//!
+//!   // Define a job for the queue.
+//!   let a_job = JobRunner::builder("remind_me", remind_me_job).build();
+//!
+//!   let context = Arc::new(JobContext{});
+//!
+//!   // Create a worker to run the job.
+//!   let worker = Worker::builder(&queue, context)
+//!     .max_concurrency(10)
+//!     .jobs([a_job])
+//!     .build();
+//!
+//!   // Submit a job to the queue.
+//!   let job_id = Job::builder("remind_me")
+//!     .run_at(time::OffsetDateTime::now_utc() + std::time::Duration::from_secs(3600))
+//!     .payload(serde_json::to_vec(&json!({ "email": "me@example.com", "message": "Time to go!" })).unwrap())
+//!     .add_to(&queue)
+//!     .await?;
+//!
+//!   // See what's happening with the job.
+//!   let status = queue.get_job_status(job_id).await?;
+//!   assert_eq!(status.state, JobState::Pending);
+//!
+//!   // Do other stuff...
+//!
+//!   Ok(())
+//! }
+//! ```
 
 mod add_job;
 mod error;

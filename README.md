@@ -6,36 +6,48 @@ Currently this is just a library embeddable into Rust applications, but future g
 and the ability to run as a standalone server, accessible by HTTP and gRPC.
 
 ```rust
+use prefect::{Error, Job, JobState, JobRunner, RunningJob, Queue, Worker};
 
-use prefect::{Job, JobState, JobRunner, RunningJob, Queue, Worker};
+#[derive(Debug)]
+pub struct JobContext {
+   // database pool or other things here
+}
 
 async fn remind_me_job(job: RunningJob, context: Arc<JobContext>) -> Result<(), Error> {
     // do something with the job
     Ok(())
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
   // Create a queue
-  let queue = Queue::new("prefect.db").await?;
-  
+  let queue = Queue::new(&PathBuf::from("prefect.db")).await?;
+
   // Define a job for the queue.
   let a_job = JobRunner::builder("remind_me", remind_me_job).build();
 
+  let context = Arc::new(JobContext{});
+
   // Create a worker to run the job.
-  let worker = worker.builder()
+  let worker = Worker::builder(&queue, context)
     .max_concurrency(10)
-    .job_list([&a_job])
+    .jobs([a_job])
     .build();
 
   // Submit a job to the queue.
   let job_id = Job::builder("remind_me")
-    .run_at(OffsetDateTime::now_utc() + Duration::from_secs(3600))
+    .run_at(time::OffsetDateTime::now_utc() + std::time::Duration::from_secs(3600))
+    .payload(serde_json::to_vec(&json!({ "email": "me@example.com", "message": "Time to go!" })).unwrap())
     .add_to(&queue)
     .await?;
 
+  // See what's happening with the job.
   let status = queue.get_job_status(job_id).await?;
-  assert_eq!(status.status, JobState::Pending);
+  assert_eq!(status.state, JobState::Pending);
+
+  // Do other stuff...
+
+  Ok(())
 }
 ```
 
