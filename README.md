@@ -13,7 +13,14 @@ pub struct JobContext {
    // database pool or other things here
 }
 
+#[derive(Serialize, Deserialize)]
+struct RemindMePayload {
+  email: String,
+  message: String,
+}
+
 async fn remind_me_job(job: RunningJob, context: Arc<JobContext>) -> Result<(), Error> {
+    let payload: RemindMePayload = job.json_payload()?;
     // do something with the job
     Ok(())
 }
@@ -23,12 +30,14 @@ async fn main() -> Result<(), Error> {
   // Create a queue
   let queue = Queue::new(&PathBuf::from("prefect.db")).await?;
 
-  // Define a job for the queue.
+  // Define a type job for the queue.
   let a_job = JobRunner::builder("remind_me", remind_me_job).build();
 
-  let context = Arc::new(JobContext{});
+  let context = Arc::new(JobContext{
+    // database pool or other things here
+  });
 
-  // Create a worker to run the job.
+  // Create a worker to run jobs.
   let worker = Worker::builder(&queue, context)
     .max_concurrency(10)
     .jobs([a_job])
@@ -37,7 +46,11 @@ async fn main() -> Result<(), Error> {
   // Submit a job to the queue.
   let job_id = Job::builder("remind_me")
     .run_at(time::OffsetDateTime::now_utc() + std::time::Duration::from_secs(3600))
-    .payload(serde_json::to_vec(&json!({ "email": "me@example.com", "message": "Time to go!" })).unwrap())
+    .json_payload(&RemindMePayload {
+        email: "me@example.com".to_string(),
+        message: "Time to go!".to_string()
+    })
+    .unwrap()
     .add_to(&queue)
     .await?;
 

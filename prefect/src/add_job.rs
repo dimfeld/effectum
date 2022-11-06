@@ -131,6 +131,15 @@ impl JobBuilder {
         self
     }
 
+    /// Serialize the payload of the job using `serde_json`.
+    pub fn json_payload<T: ?Sized + serde::Serialize>(
+        mut self,
+        payload: &T,
+    ) -> Result<Self, serde_json::Error> {
+        self.job.payload = serde_json::to_vec(payload)?;
+        Ok(self)
+    }
+
     /// Configure all of the retry behavior of the job.
     pub fn retries(mut self, retries: Retries) -> Self {
         self.job.retries = retries;
