@@ -30,6 +30,9 @@ pub enum Error {
     /// When requesting a job status, the job ID was not found.
     #[error("Job not found")]
     NotFound,
+    /// A job had an unknown state value
+    #[error("Invalid job state {0}")]
+    InvalidJobState(String),
     /// Failed to serialize or deserialize information when recording information about a job run.
     #[error("Error decoding job run info {0}")]
     InvalidJobRunInfo(serde_json::Error),

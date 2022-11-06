@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 use clap::Parser;
-use prefect::{JobDef, JobRegistry, NewJob, Queue};
+use prefect::{JobDef, JobRegistry, JobState, NewJob, Queue};
 use temp_dir::TempDir;
 
 #[derive(Parser, Debug)]
@@ -125,7 +125,7 @@ async fn run() -> Result<()> {
         for batch in task.unwrap() {
             for (_, uuid) in batch {
                 let job = queue.get_job_status(uuid).await?;
-                assert_eq!(job.status, "success");
+                assert_eq!(job.state, JobState::Succeeded);
                 checked += 1;
             }
         }

@@ -33,6 +33,7 @@ use worker_list::Workers;
 pub use error::{Error, Result};
 pub use job::{Job, JobData};
 pub use job_registry::{JobDef, JobDefBuilder, JobRegistry};
+pub use job_status::{JobState, JobStatus, RunInfo};
 pub use worker::{Worker, WorkerBuilder};
 
 pub(crate) type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
@@ -274,6 +275,7 @@ mod tests {
 
     use crate::{
         job_registry::JobDef,
+        job_status::JobState,
         test_util::{
             create_test_queue, job_list, wait_for_job, wait_for_job_status, TestContext,
             TestEnvironment,
@@ -526,7 +528,8 @@ mod tests {
                 .await
                 .expect("failed to add job");
 
-            let status = wait_for_job_status("job to run", &test.queue, job_id, "failed").await;
+            let status =
+                wait_for_job_status("job to run", &test.queue, job_id, JobState::Failed).await;
             assert_eq!(status.run_info.len(), 3);
             assert!(!status.run_info[0].success);
             assert!(!status.run_info[1].success);
@@ -665,7 +668,8 @@ mod tests {
 
         for job_id in no_run_jobs {
             event!(Level::INFO, %job_id, "checking job that should not run");
-            let status = wait_for_job_status("job to run", &test.queue, job_id, "pending").await;
+            let status =
+                wait_for_job_status("job to run", &test.queue, job_id, JobState::Pending).await;
             assert_eq!(status.run_info.len(), 0);
         }
     }
@@ -749,7 +753,8 @@ mod tests {
 
         for job_id in no_run_jobs {
             event!(Level::INFO, %job_id, "checking job that should not run");
-            let status = wait_for_job_status("job to run", &test.queue, job_id, "pending").await;
+            let status =
+                wait_for_job_status("job to run", &test.queue, job_id, JobState::Pending).await;
             assert_eq!(status.run_info.len(), 0);
         }
     }
@@ -775,7 +780,8 @@ mod tests {
             .await
             .expect("failed to add job");
 
-        let status = wait_for_job_status("job to fail", &test.queue, job_id, "failed").await;
+        let status =
+            wait_for_job_status("job to fail", &test.queue, job_id, JobState::Failed).await;
 
         assert_eq!(status.run_info.len(), 3);
         assert!(!status.run_info[0].success);
@@ -951,7 +957,7 @@ mod tests {
 
         let status = wait_for_job("job to succeed", &test.queue, job_id).await;
 
-        assert_eq!(status.status, "success");
+        assert_eq!(status.state, JobState::Succeeded);
         assert_eq!(status.run_info.len(), 3);
         assert!(!status.run_info[0].success);
         assert!(!status.run_info[1].success);
@@ -1157,14 +1163,14 @@ mod tests {
             // Jobs should either be done or not started yet. Nothing should be left hanging in a
             // running state.
 
-            if status.status == "success" {
+            if status.state == JobState::Succeeded {
                 successful += 1;
-            } else if status.status == "pending" {
+            } else if status.state == JobState::Pending {
                 pending += 1;
             }
 
             event!(Level::INFO, ?status);
-            assert!(status.status == "success" || status.status == "pending");
+            assert!(status.state == JobState::Succeeded || status.state == JobState::Pending);
         }
 
         // We should have run at least some of the jobs, but not all of them yet.

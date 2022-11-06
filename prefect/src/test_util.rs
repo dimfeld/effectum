@@ -18,7 +18,7 @@ use crate::{
     job_status::JobStatus,
     shared_state::Time,
     worker::{Worker, WorkerBuilder},
-    Queue,
+    JobState, Queue,
 };
 
 #[derive(Debug)]
@@ -249,14 +249,14 @@ where
 }
 
 pub async fn wait_for_job(label: impl Display, queue: &Queue, job_id: Uuid) -> JobStatus {
-    wait_for_job_status(label, queue, job_id, "success").await
+    wait_for_job_status(label, queue, job_id, JobState::Succeeded).await
 }
 
 pub async fn wait_for_job_status(
     label: impl Display,
     queue: &Queue,
     job_id: Uuid,
-    desired_status: &str,
+    desired_status: JobState,
 ) -> JobStatus {
     wait_for(label, || async {
         let status = match queue.get_job_status(job_id).await {
@@ -267,7 +267,7 @@ pub async fn wait_for_job_status(
             }
         };
 
-        if status.status == desired_status {
+        if status.state == desired_status {
             Ok(status)
         } else {
             Err(format!("job status {:?}", status))

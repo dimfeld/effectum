@@ -108,7 +108,7 @@ impl Queue {
 
 #[cfg(test)]
 mod tests {
-    use crate::{test_util::create_test_queue, NewJob};
+    use crate::{test_util::create_test_queue, JobState, NewJob};
 
     #[tokio::test]
     async fn add_job() {
@@ -124,7 +124,7 @@ mod tests {
         let after_start_time = queue.state.time.now();
         let status = queue.get_job_status(external_id).await.unwrap();
 
-        assert_eq!(status.status, "pending");
+        assert_eq!(status.state, JobState::Pending);
         assert_eq!(status.id, external_id);
         assert_eq!(status.priority, 1);
         assert!(status.orig_run_at < after_start_time);
@@ -148,7 +148,7 @@ mod tests {
         let status = queue.get_job_status(external_id).await.unwrap();
 
         assert_eq!(status.orig_run_at, job_time);
-        assert_eq!(status.status, "pending");
+        assert_eq!(status.state, JobState::Pending);
         assert_eq!(status.id, external_id);
         assert_eq!(status.priority, 0);
     }

@@ -1,7 +1,7 @@
 use rusqlite::{named_params, params, Connection};
 use tokio::sync::oneshot;
 
-use crate::{Error, Result};
+use crate::{job_status::JobState, Error, Result};
 
 pub(crate) struct CompleteJobArgs {
     pub job_id: i64,
@@ -45,7 +45,7 @@ fn do_complete_job(
         "$now": now,
         "$started_at": started_at,
         "$this_run_info": this_run_info,
-        "$status": if success { "success" } else { "failed" },
+        "$status": if success { JobState::Succeeded.as_str() } else { JobState::Failed.as_str() },
     })?;
 
     Ok(())
