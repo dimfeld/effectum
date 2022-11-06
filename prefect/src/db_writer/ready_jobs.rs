@@ -12,10 +12,10 @@ use tokio::sync::Mutex;
 use tracing::{event, Level};
 use uuid::Uuid;
 
-use crate::{shared_state::SharedState, worker::RunningJobs, Job, JobData, Result};
+use crate::{shared_state::SharedState, worker::RunningJobs, Result, RunningJob, RunningJobData};
 
 pub(crate) struct ReadyJob {
-    pub job: Job,
+    pub job: RunningJob,
     pub done_rx: tokio::sync::watch::Receiver<bool>,
 }
 
@@ -150,7 +150,7 @@ fn do_get_ready_jobs(
         running_jobs.started.fetch_add(1, Ordering::Relaxed);
 
         let (done_tx, done_rx) = tokio::sync::watch::channel(false);
-        let job = Job(Arc::new(JobData {
+        let job = RunningJob(Arc::new(RunningJobData {
             id: job.external_id,
             job_id: job.job_id,
             worker_id,

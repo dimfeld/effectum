@@ -7,31 +7,35 @@ and the ability to run as a standalone server, accessible by HTTP and gRPC.
 
 ```rust
 
-use prefect::{Job, JobDef, Queue, Worker};
+use prefect::{Job, JobState, JobRunner, RunningJob, Queue, Worker};
 
-async fn run_a_job(job: Job, context: Arc<JobContext>) -> Result<(), Error> {
+async fn remind_me_job(job: RunningJob, context: Arc<JobContext>) -> Result<(), Error> {
     // do something with the job
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+  // Create a queue
   let queue = Queue::new("prefect.db").await?;
-  let a_job = JobDef::builder("remind_me", run_a_job).build();
+  
+  // Define a job for the queue.
+  let a_job = JobRunner::builder("remind_me", remind_me_job).build();
 
+  // Create a worker to run the job.
   let worker = worker.builder()
     .max_concurrency(10)
     .job_list([&a_job])
     .build();
 
-  let job_id = queue.add_job(NewJob {
-    job_type: "remind_me".to_string(),
-    run_at: Some(OffsetDateTime::now_utc() + Duration::from_secs(3600)),
-    ..Default::default()
-  }).await?;
+  // Submit a job to the queue.
+  let job_id = Job::builder("remind_me")
+    .run_at(OffsetDateTime::now_utc() + Duration::from_secs(3600))
+    .add_to(&queue)
+    .await?;
 
   let status = queue.get_job_status(job_id).await?;
-  assert_eq!(status.status, "pending");
+  assert_eq!(status.status, JobState::Pending);
 }
 ```
 

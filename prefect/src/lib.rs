@@ -30,83 +30,14 @@ use tokio::task::JoinHandle;
 use worker::log_error;
 use worker_list::Workers;
 
+pub use add_job::{Job, JobBuilder, Retries};
 pub use error::{Error, Result};
-pub use job::{Job, JobData};
-pub use job_registry::{JobDef, JobDefBuilder, JobRegistry};
+pub use job::{RunningJob, RunningJobData};
+pub use job_registry::{JobRegistry, JobRunner, JobRunnerBuilder};
 pub use job_status::{JobState, JobStatus, RunInfo};
 pub use worker::{Worker, WorkerBuilder};
 
 pub(crate) type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
-
-/// `Retries` controls the exponential backoff behavior when retrying failed jobs.
-#[derive(Debug, Clone)]
-pub struct Retries {
-    /// How many times to retry a job before it is considered to have failed permanently.
-    pub max_retries: u32,
-    /// How long to wait before retrying the first time. Defaults to 20 seconds.
-    pub backoff_initial_interval: Duration,
-    /// For each retry after the first, the backoff time will be multiplied by `backoff_multiplier ^ current_retry`.
-    /// Defaults to `2`, which will double the backoff time for each retry.
-    pub backoff_multiplier: f32,
-    /// To avoid pathological cases where multiple jobs are retrying simultaneously, a
-    /// random percentage will be added to the backoff time when a job is rescheduled.
-    /// `backoff_randomization` is the maximum percentage to add.
-    pub backoff_randomization: f32,
-}
-
-impl Default for Retries {
-    fn default() -> Self {
-        Self {
-            max_retries: 3,
-            backoff_multiplier: 2f32,
-            backoff_randomization: 0.2,
-            backoff_initial_interval: Duration::from_secs(20),
-        }
-    }
-}
-
-/// A job to be submitted to the queue.
-#[derive(Debug, Clone)]
-pub struct NewJob {
-    /// The name of the job, which matches the name used in the [JobDef] for the job.
-    pub job_type: String,
-    /// Jobs with higher `priority` will be executed first.
-    pub priority: i32,
-    /// Jobs that are expected to take more processing resources can be given a higher weight
-    /// to account for this. A worker counts the job's weight (1, by default) against its
-    /// maximum concurrency when deciding how many jobs it can execute. For example,
-    /// a worker with a `max_concurrency` of 10 would run three jobs at a time if each
-    /// had a weight of three.
-    ///
-    /// For example, a video transcoding task might alter the weight depending on the resolution of
-    /// the video or the processing requirements of the codec for each run.
-    pub weight: u32,
-    /// When to run the job. `None` means to run it right away.
-    pub run_at: Option<time::OffsetDateTime>,
-    /// The payload to pass to the job when it runs.
-    pub payload: Vec<u8>,
-    /// Retry behavior when the job fails.
-    pub retries: Retries,
-    /// How long to allow the job to run before it is considered failed.
-    pub timeout: Duration,
-    /// How much extra time a heartbeat will add to the expiration time.
-    pub heartbeat_increment: Duration,
-}
-
-impl Default for NewJob {
-    fn default() -> Self {
-        Self {
-            job_type: Default::default(),
-            priority: 0,
-            weight: 1,
-            run_at: Default::default(),
-            payload: Default::default(),
-            retries: Default::default(),
-            timeout: Duration::from_secs(300),
-            heartbeat_increment: Duration::from_secs(120),
-        }
-    }
-}
 
 struct Tasks {
     close: tokio::sync::watch::Sender<()>,
@@ -274,14 +205,14 @@ mod tests {
     use tracing::{event, Level};
 
     use crate::{
-        job_registry::JobDef,
+        job_registry::JobRunner,
         job_status::JobState,
         test_util::{
             create_test_queue, job_list, wait_for_job, wait_for_job_status, TestContext,
             TestEnvironment,
         },
         worker::Worker,
-        NewJob,
+        Job, JobBuilder,
     };
 
     #[tokio::test]
@@ -295,12 +226,8 @@ mod tests {
 
         let _worker = test.worker().build().await.expect("failed to build worker");
 
-        let job_id = test
-            .queue
-            .add_job(NewJob {
-                job_type: "counter".to_string(),
-                ..Default::default()
-            })
+        let job_id = JobBuilder::new("counter")
+            .add_to(&test.queue)
             .await
             .expect("failed to add job");
 
@@ -316,18 +243,9 @@ mod tests {
         let ids = test
             .queue
             .add_jobs(vec![
-                NewJob {
-                    job_type: "counter".to_string(),
-                    ..Default::default()
-                },
-                NewJob {
-                    job_type: "counter".to_string(),
-                    ..Default::default()
-                },
-                NewJob {
-                    job_type: "counter".to_string(),
-                    ..Default::default()
-                },
+                JobBuilder::new("counter").build(),
+                JobBuilder::new("counter").build(),
+                JobBuilder::new("counter").build(),
             ])
             .await
             .expect("failed to add job");
@@ -341,12 +259,8 @@ mod tests {
     async fn worker_gets_pending_jobs_when_starting() {
         let test = TestEnvironment::new().await;
 
-        let job_id = test
-            .queue
-            .add_job(NewJob {
-                job_type: "counter".to_string(),
-                ..Default::default()
-            })
+        let job_id = Job::builder("counter")
+            .add_to(&test.queue)
             .await
             .expect("failed to add job");
 
@@ -365,26 +279,18 @@ mod tests {
         let run_at2 = run_at1 + Duration::from_secs(10);
 
         // Schedule job 2 first, to ensure that it's actually sorting by run_at
-        let job_id2 = test
-            .queue
-            .add_job(NewJob {
-                job_type: "push_payload".to_string(),
-                payload: serde_json::to_vec("job 2").unwrap(),
-                run_at: Some(run_at2),
-                ..Default::default()
-            })
+        let job_id2 = Job::builder("push_payload")
+            .payload(serde_json::to_vec("job 2").unwrap())
+            .run_at(run_at2)
+            .add_to(&test.queue)
             .await
             .expect("failed to add job 2");
         event!(Level::INFO, run_at=%run_at2, id=%job_id2, "scheduled job 2");
 
-        let job_id = test
-            .queue
-            .add_job(NewJob {
-                job_type: "push_payload".to_string(),
-                payload: serde_json::to_vec("job 1").unwrap(),
-                run_at: Some(run_at1),
-                ..Default::default()
-            })
+        let job_id = Job::builder("push_payload")
+            .payload(serde_json::to_vec("job 1").unwrap())
+            .run_at(run_at1)
+            .add_to(&test.queue)
             .await
             .expect("failed to add job 1");
         event!(Level::INFO, run_at=%run_at1, id=%job_id, "scheduled job 1");
@@ -421,18 +327,14 @@ mod tests {
         let ids = test
             .queue
             .add_jobs(vec![
-                NewJob {
-                    job_type: "push_payload".to_string(),
-                    payload: serde_json::to_vec("job 2").unwrap(),
-                    run_at: Some(run_at2),
-                    ..Default::default()
-                },
-                NewJob {
-                    job_type: "push_payload".to_string(),
-                    payload: serde_json::to_vec("job 1").unwrap(),
-                    run_at: Some(run_at1),
-                    ..Default::default()
-                },
+                Job::builder("push_payload")
+                    .payload(serde_json::to_vec("job 2").unwrap())
+                    .run_at(run_at2)
+                    .build(),
+                Job::builder("push_payload")
+                    .payload(serde_json::to_vec("job 1").unwrap())
+                    .run_at(run_at1)
+                    .build(),
             ])
             .await
             .expect("Failed to add jobs");
@@ -473,17 +375,10 @@ mod tests {
 
             let _worker = test.worker().build().await.expect("failed to build worker");
 
-            let job_id = test
-                .queue
-                .add_job(NewJob {
-                    job_type: "retry".to_string(),
-                    payload: serde_json::to_vec(&2).unwrap(),
-                    retries: Retries {
-                        max_retries: 2,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                })
+            let job_id = Job::builder("retry")
+                .payload(serde_json::to_vec(&2).unwrap())
+                .max_retries(2)
+                .add_to(&test.queue)
                 .await
                 .expect("failed to add job");
 
@@ -514,17 +409,10 @@ mod tests {
 
             let _worker = test.worker().build().await.expect("failed to build worker");
 
-            let job_id = test
-                .queue
-                .add_job(NewJob {
-                    job_type: "retry".to_string(),
-                    payload: serde_json::to_vec(&3).unwrap(),
-                    retries: Retries {
-                        max_retries: 2,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                })
+            let job_id = Job::builder("retry")
+                .payload(serde_json::to_vec(&3).unwrap())
+                .max_retries(2)
+                .add_to(&test.queue)
                 .await
                 .expect("failed to add job");
 
@@ -551,7 +439,7 @@ mod tests {
     async fn explicit_finish() {
         let mut test = TestEnvironment::new().await;
 
-        let explicit_complete_job = JobDef::builder(
+        let explicit_complete_job = JobRunner::builder(
             "explicit_complete",
             |job, _context: Arc<TestContext>| async move {
                 if job.current_try == 0 {
@@ -571,10 +459,7 @@ mod tests {
 
         let job_id = test
             .queue
-            .add_job(NewJob {
-                job_type: "explicit_complete".to_string(),
-                ..Default::default()
-            })
+            .add_job(Job::builder("explicit_complete").build())
             .await
             .expect("failed to add job");
 
@@ -598,27 +483,19 @@ mod tests {
         run_jobs.extend(
             test.queue
                 .add_jobs(vec![
-                    NewJob {
-                        job_type: "counter".to_string(),
-                        ..Default::default()
-                    },
-                    NewJob {
-                        job_type: "push_payload".to_string(),
-                        payload: serde_json::to_vec(&"test").unwrap(),
-                        ..Default::default()
-                    },
+                    Job::builder("counter").build(),
+                    Job::builder("push_payload")
+                        .payload(serde_json::to_vec(&"test").unwrap())
+                        .build(),
                 ])
                 .await
                 .expect("failed to add jobs"),
         );
 
         no_run_jobs.push(
-            test.queue
-                .add_job(NewJob {
-                    job_type: "sleep".to_string(),
-                    payload: serde_json::to_vec(&"test").unwrap(),
-                    ..Default::default()
-                })
+            Job::builder("sleep")
+                .payload(serde_json::to_vec(&"test").unwrap())
+                .add_to(&test.queue)
                 .await
                 .expect("failed to add job"),
         );
@@ -633,27 +510,19 @@ mod tests {
         run_jobs.extend(
             test.queue
                 .add_jobs(vec![
-                    NewJob {
-                        job_type: "counter".to_string(),
-                        ..Default::default()
-                    },
-                    NewJob {
-                        job_type: "push_payload".to_string(),
-                        payload: serde_json::to_vec(&"test").unwrap(),
-                        ..Default::default()
-                    },
+                    Job::builder("counter").build(),
+                    Job::builder("push_payload")
+                        .payload(serde_json::to_vec(&"test").unwrap())
+                        .build(),
                 ])
                 .await
                 .expect("Failed to add jobs"),
         );
 
         no_run_jobs.push(
-            test.queue
-                .add_job(NewJob {
-                    job_type: "sleep".to_string(),
-                    payload: serde_json::to_vec(&"test").unwrap(),
-                    ..Default::default()
-                })
+            Job::builder("sleep")
+                .payload(serde_json::to_vec(&"test").unwrap())
+                .add_to(&test.queue)
                 .await
                 .expect("failed to add job"),
         );
@@ -681,27 +550,19 @@ mod tests {
         run_jobs.extend(
             test.queue
                 .add_jobs(vec![
-                    NewJob {
-                        job_type: "counter".to_string(),
-                        ..Default::default()
-                    },
-                    NewJob {
-                        job_type: "push_payload".to_string(),
-                        payload: serde_json::to_vec(&"test").unwrap(),
-                        ..Default::default()
-                    },
+                    Job::builder("counter").build(),
+                    Job::builder("push_payload")
+                        .payload(serde_json::to_vec(&"test").unwrap())
+                        .build(),
                 ])
                 .await
                 .expect("failed to add jobs"),
         );
 
         no_run_jobs.push(
-            test.queue
-                .add_job(NewJob {
-                    job_type: "sleep".to_string(),
-                    payload: serde_json::to_vec(&"test").unwrap(),
-                    ..Default::default()
-                })
+            Job::builder("sleep")
+                .payload(serde_json::to_vec(&"test").unwrap())
+                .add_to(&test.queue)
                 .await
                 .expect("failed to add job"),
         );
@@ -716,27 +577,19 @@ mod tests {
         run_jobs.extend(
             test.queue
                 .add_jobs(vec![
-                    NewJob {
-                        job_type: "counter".to_string(),
-                        ..Default::default()
-                    },
-                    NewJob {
-                        job_type: "push_payload".to_string(),
-                        payload: serde_json::to_vec(&"test").unwrap(),
-                        ..Default::default()
-                    },
+                    Job::builder("counter").build(),
+                    Job::builder("push_payload")
+                        .payload(serde_json::to_vec(&"test").unwrap())
+                        .build(),
                 ])
                 .await
                 .expect("Failed to add jobs"),
         );
 
         no_run_jobs.push(
-            test.queue
-                .add_job(NewJob {
-                    job_type: "sleep".to_string(),
-                    payload: serde_json::to_vec(&"test").unwrap(),
-                    ..Default::default()
-                })
+            Job::builder("sleep")
+                .payload(serde_json::to_vec(&"test").unwrap())
+                .add_to(&test.queue)
                 .await
                 .expect("failed to add job"),
         );
@@ -761,18 +614,11 @@ mod tests {
         // the next run of the job could assign it to the same worker again.
         let test = TestEnvironment::new().await;
         let _worker = test.worker().build().await.expect("failed to build worker");
-        let job_id = test
-            .queue
-            .add_job(NewJob {
-                job_type: "sleep".to_string(),
-                payload: serde_json::to_vec(&10000).unwrap(),
-                timeout: Duration::from_secs(5),
-                retries: crate::Retries {
-                    max_retries: 2,
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
+        let job_id = Job::builder("sleep")
+            .payload(serde_json::to_vec(&10000).unwrap())
+            .timeout(Duration::from_secs(5))
+            .max_retries(2)
+            .add_to(&test.queue)
             .await
             .expect("failed to add job");
 
@@ -792,7 +638,7 @@ mod tests {
     #[tokio::test]
     async fn manual_heartbeat() {
         let mut test = TestEnvironment::new().await;
-        let job_def = JobDef::builder(
+        let job_def = JobRunner::builder(
             "manual_heartbeat",
             |job, _context: Arc<TestContext>| async move {
                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -806,17 +652,10 @@ mod tests {
         test.registry.add(&job_def);
         let _worker = test.worker().build().await.expect("failed to build worker");
 
-        let job_id = test
-            .queue
-            .add_job(NewJob {
-                job_type: "manual_heartbeat".to_string(),
-                retries: crate::Retries {
-                    max_retries: 0,
-                    ..Default::default()
-                },
-                timeout: Duration::from_secs(1),
-                ..Default::default()
-            })
+        let job_id = Job::builder("manual_heartbeat")
+            .max_retries(0)
+            .timeout(Duration::from_secs(1))
+            .add_to(&test.queue)
             .await
             .expect("failed to add job");
 
@@ -827,7 +666,7 @@ mod tests {
     #[tokio::test]
     async fn auto_heartbeat() {
         let mut test = TestEnvironment::new().await;
-        let job_def = JobDef::builder(
+        let job_def = JobRunner::builder(
             "auto_heartbeat",
             |_job, _context: Arc<TestContext>| async move {
                 tokio::time::sleep(Duration::from_millis(2500)).await;
@@ -840,17 +679,10 @@ mod tests {
         test.registry.add(&job_def);
         let _worker = test.worker().build().await.expect("failed to build worker");
 
-        let job_id = test
-            .queue
-            .add_job(NewJob {
-                job_type: "auto_heartbeat".to_string(),
-                retries: crate::Retries {
-                    max_retries: 0,
-                    ..Default::default()
-                },
-                timeout: Duration::from_secs(2),
-                ..Default::default()
-            })
+        let job_id = Job::builder("auto_heartbeat")
+            .max_retries(0)
+            .timeout(Duration::from_secs(2))
+            .add_to(&test.queue)
             .await
             .expect("failed to add job");
 
@@ -865,27 +697,19 @@ mod tests {
 
         // Add two job. The low priority job has an earlier run_at time so it would normally run first,
         // but the high priority job should actually run first due to running in priority order.
-        let low_prio = test
-            .queue
-            .add_job(NewJob {
-                job_type: "push_payload".to_string(),
-                payload: serde_json::to_vec("low").unwrap(),
-                priority: 1,
-                run_at: Some(now - Duration::from_secs(10)),
-                ..Default::default()
-            })
+        let low_prio = Job::builder("push_payload")
+            .payload(serde_json::to_vec("low").unwrap())
+            .priority(1)
+            .run_at(now - Duration::from_secs(10))
+            .add_to(&test.queue)
             .await
             .expect("adding low priority job");
 
-        let high_prio = test
-            .queue
-            .add_job(NewJob {
-                job_type: "push_payload".to_string(),
-                payload: serde_json::to_vec("high").unwrap(),
-                priority: 2,
-                run_at: Some(now - Duration::from_secs(5)),
-                ..Default::default()
-            })
+        let high_prio = Job::builder("push_payload")
+            .payload(serde_json::to_vec("high").unwrap())
+            .priority(2)
+            .run_at(now - Duration::from_secs(5))
+            .add_to(&test.queue)
             .await
             .expect("adding high priority job");
 
@@ -905,7 +729,7 @@ mod tests {
     #[tokio::test]
     async fn checkpoint() {
         let mut test = TestEnvironment::new().await;
-        let job_def = JobDef::builder(
+        let job_def = JobRunner::builder(
             "checkpoint_job",
             |job, _context: Arc<TestContext>| async move {
                 let payload = job.json_payload::<String>().unwrap();
@@ -935,19 +759,15 @@ mod tests {
         test.registry.add(&job_def);
         let _worker = test.worker().build().await.expect("failed to build worker");
 
-        let job_id = test
-            .queue
-            .add_job(NewJob {
-                job_type: "checkpoint_job".to_string(),
-                payload: serde_json::to_vec("initial").unwrap(),
-                retries: crate::Retries {
-                    max_retries: 3,
-                    backoff_multiplier: 1.0,
-                    backoff_initial_interval: Duration::from_millis(1),
-                    ..Default::default()
-                },
+        let job_id = Job::builder("checkpoint_job")
+            .payload(serde_json::to_vec("initial").unwrap())
+            .retries(crate::Retries {
+                max_retries: 3,
+                backoff_multiplier: 1.0,
+                backoff_initial_interval: Duration::from_millis(1),
                 ..Default::default()
             })
+            .add_to(&test.queue)
             .await
             .expect("failed to add job");
 
@@ -972,12 +792,8 @@ mod tests {
 
             let mut jobs = Vec::new();
             for _ in 0..10 {
-                let job_id = test
-                    .queue
-                    .add_job(NewJob {
-                        job_type: "max_count".to_string(),
-                        ..Default::default()
-                    })
+                let job_id = Job::builder("max_count")
+                    .add_to(&test.queue)
                     .await
                     .expect("Adding job");
                 jobs.push(job_id);
@@ -1003,13 +819,9 @@ mod tests {
 
             let mut jobs = Vec::new();
             for _ in 0..10 {
-                let job_id = test
-                    .queue
-                    .add_job(NewJob {
-                        job_type: "max_count".to_string(),
-                        weight: 3,
-                        ..Default::default()
-                    })
+                let job_id = Job::builder("max_count")
+                    .weight(3)
+                    .add_to(&test.queue)
                     .await
                     .expect("Adding job");
                 jobs.push(job_id);
@@ -1038,27 +850,24 @@ mod tests {
         async fn fetches_again_at_min_concurrency() {
             let mut test = TestEnvironment::new().await;
 
-            let ms_job = JobDef::builder("ms_job", |job, context: Arc<TestContext>| async move {
-                let start_time = context.start_time.elapsed().as_millis() as u32;
-                let sleep_time = job.json_payload::<u64>().unwrap();
-                tokio::time::sleep(Duration::from_millis(sleep_time)).await;
-                Ok::<_, String>(start_time)
-            })
-            .build();
+            let ms_job =
+                JobRunner::builder("ms_job", |job, context: Arc<TestContext>| async move {
+                    let start_time = context.start_time.elapsed().as_millis() as u32;
+                    let sleep_time = job.json_payload::<u64>().unwrap();
+                    tokio::time::sleep(Duration::from_millis(sleep_time)).await;
+                    Ok::<_, String>(start_time)
+                })
+                .build();
 
             test.registry.add(&ms_job);
 
             let mut jobs = Vec::new();
             for i in 0..20 {
                 let time = (i + 1) * 100;
-                let job_id = test
-                    .queue
-                    .add_job(NewJob {
-                        job_type: "ms_job".to_string(),
-                        payload: serde_json::to_vec(&time).unwrap(),
-                        timeout: Duration::from_secs(20 * 60),
-                        ..Default::default()
-                    })
+                let job_id = Job::builder("ms_job")
+                    .payload(serde_json::to_vec(&time).unwrap())
+                    .timeout(Duration::from_secs(20 * 60))
+                    .add_to(&test.queue)
                     .await
                     .expect("Adding job");
                 jobs.push(job_id);
@@ -1112,16 +921,14 @@ mod tests {
             .map(|i| {
                 let timeout = i * 75;
 
-                NewJob {
-                    job_type: "sleep".to_string(),
-                    payload: serde_json::to_vec(&timeout).unwrap(),
-                    timeout: Duration::from_secs(5),
-                    retries: crate::Retries {
+                Job::builder("sleep")
+                    .payload(serde_json::to_vec(&timeout).unwrap())
+                    .timeout(Duration::from_secs(5))
+                    .retries(crate::Retries {
                         max_retries: 2,
                         ..Default::default()
-                    },
-                    ..Default::default()
-                }
+                    })
+                    .build()
             })
             .collect::<Vec<_>>();
 

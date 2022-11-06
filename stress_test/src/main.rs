@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 use clap::Parser;
-use prefect::{JobDef, JobRegistry, JobState, NewJob, Queue};
+use prefect::{Job, JobRegistry, JobRunner, JobState, Queue};
 use temp_dir::TempDir;
 
 #[derive(Parser, Debug)]
@@ -28,7 +28,7 @@ struct Args {
     num_submit_tasks: usize,
 }
 
-async fn empty_task(_job: prefect::Job, _context: ()) -> Result<(), String> {
+async fn empty_task(_job: prefect::RunningJob, _context: ()) -> Result<(), String> {
     Ok(())
 }
 
@@ -40,10 +40,7 @@ async fn submit_task(
     let mut job_ids = Vec::with_capacity(num_batches);
     for _ in 0..num_batches {
         let jobs = (0..batch_size)
-            .map(|_| NewJob {
-                job_type: "empty".to_string(),
-                ..Default::default()
-            })
+            .map(|_| Job::builder("empty").build())
             .collect::<Vec<_>>();
         let ids = queue.add_jobs(jobs).await?;
         job_ids.push(ids);
@@ -62,7 +59,7 @@ async fn run() -> Result<()> {
     let path = dir.path().join("prefect.db");
     let queue = Arc::new(Queue::new(&path).await.unwrap());
 
-    let empty_job = JobDef::builder("empty", empty_task).build();
+    let empty_job = JobRunner::builder("empty", empty_task).build();
     let registry = JobRegistry::new(&[empty_job]);
 
     let workers = futures::future::try_join_all(

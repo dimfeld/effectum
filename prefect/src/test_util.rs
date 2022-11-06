@@ -13,8 +13,8 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
-    job::Job,
-    job_registry::{JobDef, JobRegistry},
+    job::RunningJob,
+    job_registry::{JobRegistry, JobRunner},
     job_status::JobStatus,
     shared_state::Time,
     worker::{Worker, WorkerBuilder},
@@ -92,8 +92,8 @@ pub async fn create_test_queue() -> TestQueue {
     TestQueue { queue, dir }
 }
 
-pub fn job_list() -> Vec<JobDef<Arc<TestContext>>> {
-    let count_task = JobDef::builder("counter", |_job, context: Arc<TestContext>| async move {
+pub fn job_list() -> Vec<JobRunner<Arc<TestContext>>> {
+    let count_task = JobRunner::builder("counter", |_job, context: Arc<TestContext>| async move {
         context
             .counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -101,9 +101,9 @@ pub fn job_list() -> Vec<JobDef<Arc<TestContext>>> {
     })
     .build();
 
-    let sleep_task = JobDef::builder("sleep", sleep_task).build();
+    let sleep_task = JobRunner::builder("sleep", sleep_task).build();
 
-    let push_payload = JobDef::builder(
+    let push_payload = JobRunner::builder(
         "push_payload",
         |job, context: Arc<TestContext>| async move {
             let payload = job.json_payload::<String>().expect("parsing payload");
@@ -113,7 +113,7 @@ pub fn job_list() -> Vec<JobDef<Arc<TestContext>>> {
     )
     .build();
 
-    let wait_for_watch_task = JobDef::builder(
+    let wait_for_watch_task = JobRunner::builder(
         "wait_for_watch",
         |job, context: Arc<TestContext>| async move {
             let watch_value = job
@@ -128,7 +128,7 @@ pub fn job_list() -> Vec<JobDef<Arc<TestContext>>> {
     )
     .build();
 
-    let retry_task = JobDef::builder("retry", |job, _context: Arc<TestContext>| async move {
+    let retry_task = JobRunner::builder("retry", |job, _context: Arc<TestContext>| async move {
         let succeed_after = job
             .json_payload::<usize>()
             .expect("payload is not a number");
@@ -141,7 +141,7 @@ pub fn job_list() -> Vec<JobDef<Arc<TestContext>>> {
     .build();
 
     let max_count_task =
-        JobDef::builder("max_count", |_job, context: Arc<TestContext>| async move {
+        JobRunner::builder("max_count", |_job, context: Arc<TestContext>| async move {
             context.inc_max_count().await;
             tokio::time::sleep(Duration::from_millis(100)).await;
             context.dec_max_count().await;
@@ -188,7 +188,7 @@ impl TestEnvironment {
 
 // Keep this one as a seperate function to make sure that both full functions and closures can be
 // used as task runners.
-async fn sleep_task(job: Job, _context: Arc<TestContext>) -> Result<(), String> {
+async fn sleep_task(job: RunningJob, _context: Arc<TestContext>) -> Result<(), String> {
     let duration = job.json_payload::<u64>().unwrap_or(5000);
     tokio::time::sleep(Duration::from_millis(duration)).await;
     Ok(())

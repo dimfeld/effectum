@@ -9,7 +9,7 @@ use tracing::{event, instrument, Level, Span};
 
 use crate::db_writer::ready_jobs::{GetReadyJobsArgs, ReadyJob};
 use crate::db_writer::{DbOperation, DbOperationType};
-use crate::job_registry::{JobDef, JobRegistry};
+use crate::job_registry::{JobRegistry, JobRunner};
 use crate::shared_state::{SharedState, Time};
 use crate::worker_list::ListeningWorker;
 use crate::{Error, Queue, Result, SmartString};
@@ -85,7 +85,7 @@ where
 {
     /// The job registry from which this worker should take its job functions.
     registry: Option<&'a JobRegistry<CONTEXT>>,
-    job_defs: Option<Vec<JobDef<CONTEXT>>>,
+    job_defs: Option<Vec<JobRunner<CONTEXT>>>,
     queue: &'a Queue,
     /// The context value to send to the worker's jobs.
     context: CONTEXT,
@@ -126,8 +126,8 @@ where
         self
     }
 
-    /// Get the job definitions from this list of [JobDefs](JobDef).
-    pub fn jobs(mut self, jobs: impl Into<Vec<JobDef<CONTEXT>>>) -> Self {
+    /// Get the job definitions from this list of [JobRunners](JobRunner).
+    pub fn jobs(mut self, jobs: impl Into<Vec<JobRunner<CONTEXT>>>) -> Self {
         if self.job_defs.is_some() {
             panic!("Cannot set both registry and job_defs");
         }
@@ -182,32 +182,32 @@ where
 
     /// Consume this [WorkerBuilder] and create a new [Worker].
     pub async fn build(self) -> Result<Worker> {
-        let job_defs: HashMap<SmartString, JobDef<CONTEXT>> = if let Some(job_defs) = self.job_defs
-        {
-            job_defs
-                .into_iter()
-                .filter(|job| self.jobs.is_empty() || self.jobs.contains(&job.name))
-                .map(|job| (job.name.clone(), job))
-                .collect()
-        } else if let Some(registry) = self.registry {
-            let job_list = if self.jobs.is_empty() {
-                registry.jobs.keys().cloned().collect()
-            } else {
-                self.jobs
-            };
+        let job_defs: HashMap<SmartString, JobRunner<CONTEXT>> =
+            if let Some(job_defs) = self.job_defs {
+                job_defs
+                    .into_iter()
+                    .filter(|job| self.jobs.is_empty() || self.jobs.contains(&job.name))
+                    .map(|job| (job.name.clone(), job))
+                    .collect()
+            } else if let Some(registry) = self.registry {
+                let job_list = if self.jobs.is_empty() {
+                    registry.jobs.keys().cloned().collect()
+                } else {
+                    self.jobs
+                };
 
-            job_list
-                .iter()
-                .filter_map(|job| {
-                    registry
-                        .jobs
-                        .get(job)
-                        .map(|job_def| (job.clone(), job_def.clone()))
-                })
-                .collect()
-        } else {
-            panic!("Must set either registry or jobs");
-        };
+                job_list
+                    .iter()
+                    .filter_map(|job| {
+                        registry
+                            .jobs
+                            .get(job)
+                            .map(|job_def| (job.clone(), job_def.clone()))
+                    })
+                    .collect()
+            } else {
+                panic!("Must set either registry or jobs");
+            };
 
         let max_concurrency = self.max_concurrency.unwrap_or(1).max(1);
         let min_concurrency = self.min_concurrency.unwrap_or(max_concurrency).max(1);
@@ -274,7 +274,7 @@ where
     listener: Arc<ListeningWorker>,
     queue: SharedState,
     job_list: Vec<String>,
-    job_defs: Arc<HashMap<SmartString, JobDef<CONTEXT>>>,
+    job_defs: Arc<HashMap<SmartString, JobRunner<CONTEXT>>>,
     running_jobs: Arc<RunningJobs>,
     context: CONTEXT,
     min_concurrency: u16,

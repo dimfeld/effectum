@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{Error, Queue, Result};
 
-/// Information about
+/// Information about the results of a job run.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RunInfo<T: Send + Debug> {
     /// If this run succeeded or not.

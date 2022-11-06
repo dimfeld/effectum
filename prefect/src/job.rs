@@ -20,25 +20,25 @@ use crate::{Error, Result, SmartString};
 
 /// Information about a running job.
 #[derive(Debug, Clone)]
-pub struct Job(pub Arc<JobData>);
+pub struct RunningJob(pub Arc<RunningJobData>);
 
-impl Deref for Job {
-    type Target = JobData;
+impl Deref for RunningJob {
+    type Target = RunningJobData;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl Display for Job {
+impl Display for RunningJob {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-/// Information about a running job. This is usually accessed through the [Job] type,
+/// Information about a running job. This is usually accessed through the [RunningJob] type,
 /// which wraps this in an [Arc].
-pub struct JobData {
+pub struct RunningJobData {
     /// The id of this job.
     pub id: Uuid,
     pub(crate) job_id: i64,
@@ -52,7 +52,7 @@ pub struct JobData {
     pub priority: i32,
     /// How much this job counts against the worker's concurrency limit.
     pub weight: u16,
-    /// The payload of the job. JSON payloads can be parsed using the [JobData::json_payload] function.
+    /// The payload of the job. JSON payloads can be parsed using the [RunningJobData::json_payload] function.
     pub payload: Vec<u8>,
     /// The timestamp, in seconds, when this job expires.
     pub expires: AtomicI64,
@@ -72,7 +72,7 @@ pub struct JobData {
     pub(crate) queue: SharedState,
 }
 
-impl Debug for JobData {
+impl Debug for RunningJobData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Job")
             .field("id", &self.id)
@@ -94,7 +94,7 @@ impl Debug for JobData {
     }
 }
 
-impl Display for JobData {
+impl Display for RunningJobData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let expires = OffsetDateTime::from_unix_timestamp(
             self.expires.load(std::sync::atomic::Ordering::Relaxed),
@@ -110,7 +110,7 @@ impl Display for JobData {
     }
 }
 
-impl JobData {
+impl RunningJobData {
     /// Checkpoint the task, replacing the payload with the passed in value.
     #[instrument(level = "debug")]
     pub async fn checkpoint_blob(&self, new_payload: Vec<u8>) -> Result<OffsetDateTime> {
