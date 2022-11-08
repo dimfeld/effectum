@@ -191,8 +191,8 @@ impl RunningJobData {
     }
 
     /// Deserialize a JSON payload into the requested type.
-    pub fn json_payload<'a, T: Deserialize<'a>>(&'a self) -> Result<T, serde_json::Error> {
-        serde_json::from_slice(self.payload.as_slice())
+    pub fn json_payload<'a, T: Deserialize<'a>>(&'a self) -> Result<T> {
+        serde_json::from_slice(self.payload.as_slice()).map_err(Error::PayloadError)
     }
 
     #[instrument(level = "debug")]

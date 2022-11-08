@@ -132,11 +132,8 @@ impl JobBuilder {
     }
 
     /// Serialize the payload of the job using `serde_json`.
-    pub fn json_payload<T: ?Sized + serde::Serialize>(
-        mut self,
-        payload: &T,
-    ) -> Result<Self, serde_json::Error> {
-        self.job.payload = serde_json::to_vec(payload)?;
+    pub fn json_payload<T: ?Sized + serde::Serialize>(mut self, payload: &T) -> Result<Self> {
+        self.job.payload = serde_json::to_vec(payload).map_err(Error::PayloadError)?;
         Ok(self)
     }
 

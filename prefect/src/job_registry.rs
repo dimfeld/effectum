@@ -83,7 +83,7 @@ where
 #[derive(Clone)]
 pub struct JobRunner<CONTEXT>
 where
-    CONTEXT: Send + Debug + Clone + 'static,
+    CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
     pub(crate) name: SmartString,
     pub(crate) runner: JobFn<CONTEXT>,
@@ -103,9 +103,9 @@ where
     ) -> JobRunner<CONTEXT>
     where
         F: Fn(RunningJob, CONTEXT) -> Fut + Send + Sync + Clone + 'static,
-        CONTEXT: Send + Debug + Clone + 'static,
-        Fut: Future<Output = Result<T, E>> + Send + Sync,
-        T: Send + Sync + Debug + Serialize + 'static,
+        CONTEXT: Send + Sync + Debug + Clone + 'static,
+        Fut: Future<Output = Result<T, E>> + Send,
+        T: Send + Debug + Serialize + 'static,
         E: Send + Display + 'static,
     {
         let f = move |job: RunningJob, context: CONTEXT| {
@@ -171,9 +171,9 @@ where
     ) -> JobRunnerBuilder<CONTEXT>
     where
         F: Fn(RunningJob, CONTEXT) -> Fut + Send + Sync + Clone + 'static,
-        CONTEXT: Send + Debug + Clone + 'static,
-        Fut: Future<Output = Result<T, E>> + Send + Sync,
-        T: Send + Sync + Debug + Serialize + 'static,
+        CONTEXT: Send + Sync + Debug + Clone + 'static,
+        Fut: Future<Output = Result<T, E>> + Send,
+        T: Send + Debug + Serialize + 'static,
         E: Send + Display + 'static,
     {
         let def = JobRunner::new(name, runner, false);
@@ -184,14 +184,14 @@ where
 /// A builder object for a [JobRunner].
 pub struct JobRunnerBuilder<CONTEXT>
 where
-    CONTEXT: Send + Debug + Clone + 'static,
+    CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
     def: JobRunner<CONTEXT>,
 }
 
 impl<CONTEXT> JobRunnerBuilder<CONTEXT>
 where
-    CONTEXT: Send + Debug + Clone + 'static,
+    CONTEXT: Send + Sync + Debug + Clone + 'static,
 {
     /// Set whether the job should automatically send heartbeats while it runs.
     pub fn autoheartbeat(mut self, autoheartbeat: bool) -> Self {

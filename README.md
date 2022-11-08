@@ -49,8 +49,7 @@ async fn main() -> Result<(), Error> {
     .json_payload(&RemindMePayload {
         email: "me@example.com".to_string(),
         message: "Time to go!".to_string()
-    })
-    .unwrap()
+    })?
     .add_to(&queue)
     .await?;
 

@@ -21,7 +21,7 @@
 //! }
 //!
 //! async fn remind_me_job(job: RunningJob, context: Arc<JobContext>) -> Result<(), Error> {
-//!     let payload: RemindMePayload = job.json_payload().unwrap();
+//!     let payload: RemindMePayload = job.json_payload()?;
 //!     // do something with the job
 //!     Ok(())
 //! }
@@ -50,8 +50,7 @@
 //!     .json_payload(&RemindMePayload {
 //!         email: "me@example.com".to_string(),
 //!         message: "Time to go!".to_string()
-//!     })
-//!     .unwrap()
+//!     })?
 //!     .add_to(&queue)
 //!     .await?;
 //!
@@ -1040,6 +1039,34 @@ mod tests {
         event!(Level::INFO, %successful, %pending);
         assert!(successful > 0);
         assert!(pending > 0);
+    }
+
+    /// Ensure that we can use non-Sync values in a task across await points. A failure here will
+    /// manifest at the compiler level.
+    #[tokio::test]
+    async fn task_uses_non_sync_value() {
+        let test = TestEnvironment::new().await;
+        let cell_job = JobRunner::builder("cell", |_job, _context: Arc<TestContext>| async move {
+            // Use Cell because it is Send, but not Sync. Be sure to hold it across the await.
+            let value = std::cell::Cell::new(5);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Ok::<_, String>(value.get())
+        })
+        .build();
+
+        let _worker = test
+            .worker()
+            .jobs([cell_job])
+            .build()
+            .await
+            .expect("failed to build worker");
+
+        let job_id = Job::builder("cell")
+            .add_to(&test.queue)
+            .await
+            .expect("Adding job");
+
+        wait_for_job("job to succeed", &test.queue, job_id).await;
     }
 
     mod unimplemented {

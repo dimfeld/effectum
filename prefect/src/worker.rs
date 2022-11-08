@@ -457,3 +457,20 @@ async fn wait_for_next_autoheartbeat(time: &Time, expires: i64, heartbeat_increm
 
     tokio::time::sleep_until(instant).await
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_util::TestEnvironment;
+
+    use super::*;
+
+    #[tokio::test]
+    #[should_panic]
+    async fn worker_without_jobs_should_panic() {
+        let test = TestEnvironment::new().await;
+        Worker::builder(&test.queue, test.context.clone())
+            .build()
+            .await
+            .unwrap();
+    }
+}
