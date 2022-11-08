@@ -63,6 +63,8 @@ async fn main() -> Result<(), Error> {
 }
 ```
 
+[Changelog](https://github.com/dimfeld/prefect/blob/master/prefect/CHANGELOG.md)
+
 [Full Development Notes](https://imfeld.dev/notes/projects_prefect)
 
 # Roadmap
