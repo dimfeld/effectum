@@ -3,6 +3,8 @@ use tokio::sync::oneshot;
 
 use crate::Result;
 
+use super::DbOperationResult;
+
 pub(crate) struct WriteHeartbeatArgs {
     pub job_id: i64,
     pub new_expiration: i64,
@@ -39,7 +41,11 @@ fn do_write_heartbeat(
     Ok(actual_new_expire_time)
 }
 
-pub(crate) fn write_heartbeat(tx: &Connection, worker_id: u64, args: WriteHeartbeatArgs) -> bool {
+pub(super) fn write_heartbeat(
+    tx: &Connection,
+    worker_id: u64,
+    args: WriteHeartbeatArgs,
+) -> DbOperationResult {
     let WriteHeartbeatArgs {
         job_id,
         new_expiration,
@@ -47,9 +53,7 @@ pub(crate) fn write_heartbeat(tx: &Connection, worker_id: u64, args: WriteHeartb
     } = args;
 
     let result = do_write_heartbeat(tx, job_id, worker_id, new_expiration);
-    let worked = result.is_ok();
-    result_tx.send(result).ok();
-    worked
+    DbOperationResult::NewExpirationResult(super::OperationResult { result, result_tx })
 }
 
 pub(crate) struct WriteCheckpointArgs {
@@ -94,7 +98,11 @@ fn do_write_checkpoint(
     Ok(actual_new_expire_time)
 }
 
-pub(crate) fn write_checkpoint(tx: &Connection, worker_id: u64, args: WriteCheckpointArgs) -> bool {
+pub(super) fn write_checkpoint(
+    tx: &Connection,
+    worker_id: u64,
+    args: WriteCheckpointArgs,
+) -> DbOperationResult {
     let WriteCheckpointArgs {
         job_id,
         new_expiration,
@@ -103,7 +111,5 @@ pub(crate) fn write_checkpoint(tx: &Connection, worker_id: u64, args: WriteCheck
     } = args;
 
     let result = do_write_checkpoint(tx, job_id, worker_id, new_expiration, payload);
-    let worked = result.is_ok();
-    result_tx.send(result).ok();
-    worked
+    DbOperationResult::NewExpirationResult(super::OperationResult { result, result_tx })
 }

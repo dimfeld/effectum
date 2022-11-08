@@ -3,6 +3,8 @@ use tokio::sync::oneshot;
 
 use crate::{Error, Result};
 
+use super::DbOperationResult;
+
 pub(crate) struct RetryJobArgs {
     pub job_id: i64,
     pub run_info: String,
@@ -44,7 +46,7 @@ fn do_retry_job(
     Ok(())
 }
 
-pub(crate) fn retry_job(tx: &Connection, worker_id: u64, args: RetryJobArgs) -> bool {
+pub(super) fn retry_job(tx: &Connection, worker_id: u64, args: RetryJobArgs) -> DbOperationResult {
     let RetryJobArgs {
         job_id,
         run_info,
@@ -53,7 +55,6 @@ pub(crate) fn retry_job(tx: &Connection, worker_id: u64, args: RetryJobArgs) -> 
     } = args;
 
     let result = do_retry_job(tx, worker_id, job_id, run_info, next_time);
-    let worked = result.is_ok();
-    result_tx.send(result).ok();
-    worked
+
+    DbOperationResult::EmptyValue(super::OperationResult { result, result_tx })
 }

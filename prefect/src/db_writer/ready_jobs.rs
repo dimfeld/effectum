@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 use crate::{shared_state::SharedState, worker::RunningJobs, Result, RunningJob, RunningJobData};
 
+use super::DbOperationResult;
+
 pub(crate) struct ReadyJob {
     pub job: RunningJob,
     pub done_rx: tokio::sync::watch::Receiver<bool>,
@@ -176,12 +178,12 @@ fn do_get_ready_jobs(
     Ok(ready_jobs)
 }
 
-pub(crate) fn get_ready_jobs(
+pub(super) fn get_ready_jobs(
     tx: &Connection,
     queue: &SharedState,
     worker_id: u64,
     args: GetReadyJobsArgs,
-) -> bool {
+) -> DbOperationResult {
     let GetReadyJobsArgs {
         job_types,
         max_jobs,
@@ -202,7 +204,5 @@ pub(crate) fn get_ready_jobs(
         now,
     );
 
-    let worked = result.is_ok();
-    result_tx.send(result).ok();
-    worked
+    DbOperationResult::GetReadyJobs(super::OperationResult { result, result_tx })
 }

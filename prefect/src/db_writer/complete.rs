@@ -3,6 +3,8 @@ use tokio::sync::oneshot;
 
 use crate::{job_status::JobState, Error, Result};
 
+use super::DbOperationResult;
+
 pub(crate) struct CompleteJobArgs {
     pub job_id: i64,
     pub run_info: String,
@@ -51,7 +53,11 @@ fn do_complete_job(
     Ok(())
 }
 
-pub(crate) fn complete_job(tx: &Connection, worker_id: u64, args: CompleteJobArgs) -> bool {
+pub(super) fn complete_job(
+    tx: &Connection,
+    worker_id: u64,
+    args: CompleteJobArgs,
+) -> DbOperationResult {
     let CompleteJobArgs {
         job_id,
         run_info,
@@ -62,7 +68,5 @@ pub(crate) fn complete_job(tx: &Connection, worker_id: u64, args: CompleteJobArg
     } = args;
 
     let result = do_complete_job(tx, job_id, worker_id, now, started_at, success, run_info);
-    let worked = result.is_ok();
-    result_tx.send(result).ok();
-    worked
+    DbOperationResult::EmptyValue(super::OperationResult { result, result_tx })
 }

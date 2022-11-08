@@ -3,11 +3,12 @@ use crate::shared_state::SharedState;
 use crate::worker::log_error;
 use rusqlite::Connection;
 use tracing::{event, instrument, Level};
+use uuid::Uuid;
 
-use self::add_job::{add_job, add_jobs, AddJobArgs, AddMultipleJobsArgs};
+use self::add_job::{add_job, add_jobs, AddJobArgs, AddMultipleJobsArgs, AddMultipleJobsResult};
 use self::complete::{complete_job, CompleteJobArgs};
 use self::heartbeat::{write_checkpoint, write_heartbeat, WriteCheckpointArgs, WriteHeartbeatArgs};
-use self::ready_jobs::{get_ready_jobs, GetReadyJobsArgs};
+use self::ready_jobs::{get_ready_jobs, GetReadyJobsArgs, ReadyJob};
 use self::retry::{retry_job, RetryJobArgs};
 
 pub(crate) mod add_job;
@@ -33,13 +34,63 @@ pub(crate) enum DbOperationType {
     AddMultipleJobs(AddMultipleJobsArgs),
 }
 
+struct OperationResult<T> {
+    result: Result<T>,
+    result_tx: tokio::sync::oneshot::Sender<Result<T>>,
+}
+
+enum DbOperationResult {
+    Close,
+    EmptyValue(OperationResult<()>),
+    NewExpirationResult(OperationResult<Option<i64>>),
+    GetReadyJobs(OperationResult<Vec<ReadyJob>>),
+    AddJob(OperationResult<Uuid>),
+    AddMultipleJobs(OperationResult<AddMultipleJobsResult>),
+}
+
+impl DbOperationResult {
+    fn is_ok(&self) -> bool {
+        match self {
+            DbOperationResult::Close => true,
+            DbOperationResult::EmptyValue(result) => result.result.is_ok(),
+            DbOperationResult::NewExpirationResult(result) => result.result.is_ok(),
+            DbOperationResult::GetReadyJobs(result) => result.result.is_ok(),
+            DbOperationResult::AddJob(result) => result.result.is_ok(),
+            DbOperationResult::AddMultipleJobs(result) => result.result.is_ok(),
+        }
+    }
+
+    fn send(self) {
+        match self {
+            DbOperationResult::Close => {}
+            DbOperationResult::EmptyValue(result) => {
+                result.result_tx.send(result.result).ok();
+            }
+            DbOperationResult::NewExpirationResult(result) => {
+                result.result_tx.send(result.result).ok();
+            }
+            DbOperationResult::GetReadyJobs(result) => {
+                result.result_tx.send(result.result).ok();
+            }
+            DbOperationResult::AddJob(result) => {
+                result.result_tx.send(result.result).ok();
+            }
+            DbOperationResult::AddMultipleJobs(result) => {
+                result.result_tx.send(result.result).ok();
+            }
+        };
+    }
+}
+
 #[instrument(level = "trace", skip_all, fields(count = %operations.len()))]
 fn process_operations(
     conn: &mut Connection,
     state: &SharedState,
     operations: &mut Vec<DbOperation>,
 ) -> Result<bool> {
+    let mut results = Vec::with_capacity(operations.len());
     let mut closed = false;
+
     let mut tx = conn.transaction()?;
     for op in operations.drain(..) {
         let _span = op.span.enter();
@@ -47,7 +98,7 @@ fn process_operations(
         // transaction for the whole batch since it's many times faster.
         match tx.savepoint() {
             Ok(mut sp) => {
-                let worked = match op.operation {
+                let result = match op.operation {
                     DbOperationType::CompleteJob(args) => complete_job(&sp, op.worker_id, args),
                     DbOperationType::RetryJob(args) => retry_job(&sp, op.worker_id, args),
                     DbOperationType::GetReadyJobs(args) => {
@@ -63,9 +114,12 @@ fn process_operations(
                     DbOperationType::AddMultipleJobs(args) => add_jobs(&sp, args),
                     DbOperationType::Close => {
                         closed = true;
-                        true
+                        DbOperationResult::Close
                     }
                 };
+
+                let worked = result.is_ok();
+                results.push(result);
 
                 if worked {
                     log_error(sp.commit());
@@ -79,6 +133,10 @@ fn process_operations(
         }
     }
     tx.commit()?;
+
+    for result in results {
+        result.send();
+    }
 
     Ok(closed)
 }

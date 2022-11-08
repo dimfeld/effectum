@@ -7,6 +7,8 @@ use uuid::Uuid;
 use crate::Job;
 use crate::Result;
 
+use super::DbOperationResult;
+
 pub(crate) struct AddJobArgs {
     pub job: Job,
     pub now: OffsetDateTime,
@@ -94,7 +96,7 @@ fn do_add_job(tx: &Connection, job_config: &Job, now: OffsetDateTime) -> Result<
     )
 }
 
-pub(crate) fn add_job(tx: &Connection, args: AddJobArgs) -> bool {
+pub(super) fn add_job(tx: &Connection, args: AddJobArgs) -> DbOperationResult {
     let AddJobArgs {
         job,
         now,
@@ -102,9 +104,7 @@ pub(crate) fn add_job(tx: &Connection, args: AddJobArgs) -> bool {
     } = args;
 
     let result = do_add_job(tx, &job, now);
-    let worked = result.is_ok();
-    result_tx.send(result).ok();
-    worked
+    DbOperationResult::AddJob(super::OperationResult { result, result_tx })
 }
 
 fn do_add_jobs(
@@ -133,7 +133,7 @@ fn do_add_jobs(
     Ok(AddMultipleJobsResult { ids })
 }
 
-pub(crate) fn add_jobs(tx: &Connection, args: AddMultipleJobsArgs) -> bool {
+pub(super) fn add_jobs(tx: &Connection, args: AddMultipleJobsArgs) -> DbOperationResult {
     let AddMultipleJobsArgs {
         jobs,
         now,
@@ -141,7 +141,5 @@ pub(crate) fn add_jobs(tx: &Connection, args: AddMultipleJobsArgs) -> bool {
     } = args;
 
     let result = do_add_jobs(tx, jobs, now);
-    let worked = result.is_ok();
-    result_tx.send(result).ok();
-    worked
+    DbOperationResult::AddMultipleJobs(super::OperationResult { result, result_tx })
 }
