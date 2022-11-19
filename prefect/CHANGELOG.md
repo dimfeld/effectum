@@ -1,4 +1,8 @@
 
+# 0.1.3
+
+- Better output for Job object in INFO-level tracing messages
+
 # 0.1.2
 
 - Remove unnecessary `Sync` restriction on the future returned by a job runner function. This allows job runners to hold

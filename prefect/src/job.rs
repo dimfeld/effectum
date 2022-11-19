@@ -241,13 +241,13 @@ impl RunningJobData {
     }
 
     /// Mark the job as successful.
-    #[instrument]
+    #[instrument(skip(self), fields(self = %self))]
     pub async fn complete<T: Serialize + Send + Debug>(&self, info: T) -> Result<(), Error> {
         self.mark_job_permanently_done(info, true).await
     }
 
     /// Mark the job as failed.
-    #[instrument]
+    #[instrument(skip(self), fields(self = %self))]
     pub async fn fail<T: Serialize + Send + Debug>(&self, info: T) -> Result<(), Error> {
         // Remove task from running jobs, update job info, calculate new retry time, and stick the
         // job back into pending.
