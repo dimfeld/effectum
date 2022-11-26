@@ -14,7 +14,7 @@ pub(crate) struct CompleteJobArgs {
     pub result_tx: oneshot::Sender<Result<()>>,
 }
 
-fn do_complete_job(
+pub(super) fn do_complete_job(
     tx: &Connection,
     job_id: i64,
     worker_id: u64,

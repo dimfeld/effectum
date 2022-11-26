@@ -90,3 +90,18 @@ pub use local_queue::*;
 pub use worker::{Worker, WorkerBuilder};
 
 pub(crate) type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
+
+/// How to treat jobs which are already marked as running when the queue starts.
+/// This accounts for cases where the process is restarted unexpectedly.
+#[non_exhaustive]
+pub enum JobRecoveryBehavior {
+    /// Mark the job as failed, and schedule the next try to run immediately. (Normal worker
+    /// concurrency limits will still apply.)
+    FailAndRetryImmediately,
+    /// Mark the job as failed, and schedule the next try to run with the normal retry backoff
+    /// timing.
+    FailAndRetryWithBackoff,
+    // /// Don't touch the job. This should only be used if the queue is running in a separate process
+    // /// from the workers, which will be possible in a future version.
+    // DoNothing,
+}

@@ -246,6 +246,21 @@ impl RunningJobData {
         self.mark_job_permanently_done(info, true).await
     }
 
+    /// Calculate the next run time, given the backoff.
+    pub(crate) fn calculate_next_run_time(
+        now: &OffsetDateTime,
+        current_try: i32,
+        backoff_initial_interval: i32,
+        backoff_multiplier: f64,
+        backoff_randomization: f64,
+    ) -> i64 {
+        let run_delta = (backoff_initial_interval as f64)
+            * (backoff_multiplier).powi(current_try)
+            * (1.0 + rand::random::<f64>() * backoff_randomization);
+        event!(Level::DEBUG, %run_delta, %current_try);
+        now.unix_timestamp() + (run_delta as i64)
+    }
+
     /// Mark the job as failed.
     #[instrument(skip(self), fields(self = %self))]
     pub async fn fail<T: Serialize + Send + Debug>(&self, info: T) -> Result<(), Error> {
@@ -262,13 +277,14 @@ impl RunningJobData {
         let _chan = done.take().expect("Called fail after job finished");
         drop(done);
 
-        // Calculate the next run time, given the backoff.
         let now = self.queue.time.now();
-        let run_delta = (self.backoff_initial_interval as f64)
-            * (self.backoff_multiplier).powi(self.current_try)
-            * (1.0 + rand::random::<f64>() * self.backoff_randomization);
-        event!(Level::DEBUG, %run_delta, current_try=%self.current_try);
-        let next_time = now.unix_timestamp() + (run_delta as i64);
+        let next_time = Self::calculate_next_run_time(
+            &now,
+            self.current_try,
+            self.backoff_initial_interval,
+            self.backoff_multiplier,
+            self.backoff_randomization,
+        );
         let job_id = self.job_id;
         let worker_id = self.worker_id;
 

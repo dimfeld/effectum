@@ -1,6 +1,7 @@
 use std::{
     fmt::Display,
     ops::Deref,
+    path::PathBuf,
     sync::{atomic::AtomicUsize, Arc},
     time::Duration,
 };
@@ -73,6 +74,7 @@ impl TestContext {
 
 pub struct TestQueue {
     queue: Queue,
+    pub path: PathBuf,
     #[allow(dead_code)]
     dir: TempDir,
 }
@@ -87,9 +89,10 @@ impl Deref for TestQueue {
 
 pub async fn create_test_queue() -> TestQueue {
     let dir = temp_dir::TempDir::new().unwrap();
-    let queue = crate::Queue::new(&dir.child("test.sqlite")).await.unwrap();
+    let path = dir.child("test.sqlite");
+    let queue = crate::Queue::new(&path).await.unwrap();
 
-    TestQueue { queue, dir }
+    TestQueue { queue, path, dir }
 }
 
 pub fn job_list() -> Vec<JobRunner<Arc<TestContext>>> {

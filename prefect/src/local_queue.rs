@@ -1,25 +1,41 @@
-use crate::db_writer::{db_writer_worker, DbOperation, DbOperationType};
-use crate::error::*;
-use crate::pending_jobs::monitor_pending_jobs;
-use crate::shared_state::{SharedState, SharedStateData};
-use crate::sqlite_functions::register_functions;
-use crate::worker::log_error;
-use crate::worker_list::Workers;
+use std::{path::Path, sync::Arc, time::Duration};
 
 use deadpool_sqlite::{Hook, HookError, HookErrorCause};
 use rusqlite::Connection;
-use std::{path::Path, sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 
+use crate::{
+    db_writer::{db_writer_worker, handle_active_jobs_at_startup, DbOperation, DbOperationType},
+    error::*,
+    pending_jobs::monitor_pending_jobs,
+    shared_state::{SharedState, SharedStateData},
+    sqlite_functions::register_functions,
+    worker::log_error,
+    worker_list::Workers,
+    JobRecoveryBehavior,
+};
+
 /// Options used to configure a [Queue] instance.
-pub struct LocalQueueOptions<'a> {
+pub struct QueueOptions<'a> {
     path: &'a Path,
+    job_recovery_behavior: JobRecoveryBehavior,
 }
 
-impl<'a> LocalQueueOptions<'a> {
+impl<'a> QueueOptions<'a> {
     /// Create a new options object for a [Queue]
     pub fn new(path: &'a Path) -> Self {
-        LocalQueueOptions { path }
+        QueueOptions {
+            path,
+            job_recovery_behavior: JobRecoveryBehavior::FailAndRetryImmediately,
+        }
+    }
+
+    /// Configure how the [Queue] treats jobs that were already marked as runnning when the it
+    /// starts. This usually indicates jobs that were left unfinished due to an unexpected process
+    /// restart.
+    pub fn job_recovery_behavior(mut self, behavior: JobRecoveryBehavior) -> Self {
+        self.job_recovery_behavior = behavior;
+        self
     }
 
     /// Build a [Queue] from this options object.
@@ -44,11 +60,16 @@ pub struct Queue {
 impl Queue {
     /// Open or create a Queue database at the given path.
     pub async fn new(file: &Path) -> Result<Queue> {
-        Queue::with_options(LocalQueueOptions::new(file)).await
+        Queue::with_options(QueueOptions::new(file)).await
+    }
+
+    /// Create a builder object for a Queue
+    pub fn builder(path: &Path) -> QueueOptions {
+        QueueOptions::new(path)
     }
 
     /// Open or create a Queue database with the given [LocalQueueOptions].
-    pub async fn with_options(options: LocalQueueOptions<'_>) -> Result<Queue> {
+    pub async fn with_options(options: QueueOptions<'_>) -> Result<Queue> {
         let mut conn = Connection::open(options.path).map_err(Error::open_database)?;
         conn.pragma_update(None, "journal", "wal")
             .map_err(Error::open_database)?;
@@ -90,6 +111,9 @@ impl Queue {
             db_write_tx,
         }));
 
+        // Handle any jobs that were not cleanly finished from a previous run.
+        handle_active_jobs_at_startup(&shared_state, options.job_recovery_behavior, &mut conn)?;
+
         let db_write_worker = {
             let shared_state = shared_state.clone();
             std::thread::spawn(move || db_writer_worker(conn, shared_state, db_write_rx))
@@ -98,12 +122,6 @@ impl Queue {
         let pending_jobs_monitor =
             monitor_pending_jobs(shared_state.clone(), pending_jobs_rx).await?;
 
-        // TODO Optionally clean up running jobs here, treating them all as failures and scheduling
-        // for retry. For later server mode, we probably want to do something more intelligent so
-        // that we can continue to receive "job finished" notifications. This will probably involve
-        // persisting the worker information to the database so we can properly recover it.
-
-        // TODO sweeper task for expired jobs that might not have been caught by the normal mechanism
         // TODO task to schedule recurring jobs
         // TODO Optional task to delete old jobs from `done_jobs`
 
@@ -203,7 +221,7 @@ mod tests {
             TestEnvironment,
         },
         worker::Worker,
-        Job, JobBuilder,
+        Error, Job, JobBuilder, Queue,
     };
 
     #[tokio::test]
@@ -356,9 +374,8 @@ mod tests {
     }
 
     mod retry {
-        use crate::test_util::wait_for_job_status;
-
         use super::*;
+        use crate::test_util::wait_for_job_status;
 
         #[tokio::test(start_paused = true)]
         async fn success_after_retry() {
@@ -970,10 +987,48 @@ mod tests {
         assert!(pending > 0);
     }
 
+    #[tokio::test]
+    async fn job_recovery() {
+        let test = TestEnvironment::new().await;
+
+        // Job that will just sleep for 1000 seconds.
+        let job_id = Job::builder("sleep")
+            .payload(serde_json::to_vec(&1000000).unwrap())
+            .add_to(&test.queue)
+            .await
+            .expect("failed to add job");
+
+        let _worker = test.worker().build().await.expect("building worker");
+
+        wait_for_job_status("job to run", &test.queue, job_id, JobState::Running).await;
+
+        let close_result = test.queue.close(Duration::from_secs(0)).await;
+        assert!(matches!(close_result, Err(Error::Timeout)));
+
+        // Now start a new Queue at the same path and make sure the job restarts properly.
+        let new_queue = Queue::builder(&test.queue.path)
+            .job_recovery_behavior(crate::JobRecoveryBehavior::FailAndRetryImmediately)
+            .build()
+            .await
+            .expect("Starting new queue");
+
+        let new_status = wait_for_job_status(
+            "job to be rescheduled",
+            &new_queue,
+            job_id,
+            JobState::Pending,
+        )
+        .await;
+
+        let now = new_queue.state.time.now();
+        assert!(new_status.run_at.unwrap() <= now);
+        assert!(new_status.current_try.unwrap() == 1);
+    }
+
     /// Ensure that we can use non-Sync values in a task across await points. A failure here will
     /// manifest at the compiler level.
     #[tokio::test]
-    async fn task_uses_non_sync_value() {
+    async fn task_can_use_non_sync_value() {
         let test = TestEnvironment::new().await;
         let cell_job = JobRunner::builder("cell", |_job, _context: Arc<TestContext>| async move {
             // Use Cell because it is Send, but not Sync. Be sure to hold it across the await.
