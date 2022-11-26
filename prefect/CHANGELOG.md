@@ -1,3 +1,7 @@
+# 0.1.4
+
+- Prefect now handles jobs that were left unfinished due to an unexpected process restart. It treats these as failures,
+    and can either reschedule them immediately or like a normal failure, using the task's backoff configuration.
 
 # 0.1.3
 
