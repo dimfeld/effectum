@@ -12,7 +12,7 @@ pub(crate) struct RetryJobArgs {
     pub result_tx: oneshot::Sender<Result<()>>,
 }
 
-fn do_retry_job(
+pub(super) fn do_retry_job(
     tx: &Connection,
     worker_id: u64,
     job_id: i64,

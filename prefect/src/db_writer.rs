@@ -1,21 +1,24 @@
-use crate::error::Result;
-use crate::shared_state::SharedState;
-use crate::worker::log_error;
 use rusqlite::Connection;
 use tracing::{event, instrument, Level};
 use uuid::Uuid;
 
-use self::add_job::{add_job, add_jobs, AddJobArgs, AddMultipleJobsArgs, AddMultipleJobsResult};
-use self::complete::{complete_job, CompleteJobArgs};
-use self::heartbeat::{write_checkpoint, write_heartbeat, WriteCheckpointArgs, WriteHeartbeatArgs};
-use self::ready_jobs::{get_ready_jobs, GetReadyJobsArgs, ReadyJob};
-use self::retry::{retry_job, RetryJobArgs};
+use self::{
+    add_job::{add_job, add_jobs, AddJobArgs, AddMultipleJobsArgs, AddMultipleJobsResult},
+    complete::{complete_job, CompleteJobArgs},
+    heartbeat::{write_checkpoint, write_heartbeat, WriteCheckpointArgs, WriteHeartbeatArgs},
+    ready_jobs::{get_ready_jobs, GetReadyJobsArgs, ReadyJob},
+    retry::{retry_job, RetryJobArgs},
+};
+use crate::{error::Result, shared_state::SharedState, worker::log_error};
 
 pub(crate) mod add_job;
 pub(crate) mod complete;
 pub(crate) mod heartbeat;
+pub(crate) mod job_recovery;
 pub(crate) mod ready_jobs;
 pub(crate) mod retry;
+
+pub(crate) use job_recovery::handle_active_jobs_at_startup;
 
 pub(crate) struct DbOperation {
     pub worker_id: u64,
