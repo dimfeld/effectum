@@ -77,11 +77,10 @@ async fn main() -> Result<(), Error> {
 - Schedule jobs in the future
 - Automatically retry failed jobs, with exponential backoff
 - Checkpoints to allow smart resumption of a job if it fails midway through.
-
+- Immediately schedule a retry for jobs that were running when the process restarts unexpectedly
 
 ## Soon
 
-- Immediately schedule a retry for jobs that were running when the process restarts unexpectedly
 - Optional sweeper to prevent "done" job data from building up indefinitely
 - Create recurring scheduled jobs
 - Cancel or modify pending jobs
