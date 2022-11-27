@@ -3,7 +3,9 @@
 A Rust job queue library, based on SQLite so it doesn't depend on any other services.
 
 Currently this is just a library embeddable into Rust applications, but future goals include bindings into other languages
-and the ability to run as a standalone server, accessible by HTTP and gRPC.
+and the ability to run as a standalone server, accessible by HTTP and gRPC. This will be designed so that a product can
+start with the embedded version to use minimal infrastructure, and then move to the server version with minimal changes when
+the time comes to scale out.
 
 ```rust
 use prefect::{Error, Job, JobState, JobRunner, RunningJob, Queue, Worker};
