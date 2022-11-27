@@ -33,10 +33,12 @@ ulid = { version = "1.0.0", features = ["uuid"] }
 uuid = "1.1.2"
 
 [dev-dependencies]
+color-eyre = "0.6.2"
 once_cell = "1.15.0"
+rand = "0.8.5"
 temp-dir = "0.1.11"
 tokio = { version = "1.21.2", features = ["rt", "macros", "time", "sync", "test-util"] }
-tracing-subscriber = "0.3.16"
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"]}
 tracing-tree = "0.2.1"
 
 [features]
