@@ -1,4 +1,9 @@
-use std::{borrow::Borrow, fmt::Debug, fmt::Display, panic::AssertUnwindSafe, sync::Arc};
+use std::{
+    borrow::Borrow,
+    fmt::{Debug, Display},
+    panic::AssertUnwindSafe,
+    sync::Arc,
+};
 
 use ahash::HashMap;
 use futures::{Future, FutureExt};
@@ -59,7 +64,7 @@ where
 /// The function can be either a normal function or a closure.
 ///
 /// ```
-/// # use prefect::*;
+/// # use effectum::*;
 /// # use std::sync::Arc;
 /// #[derive(Debug)]
 /// pub struct JobContext {
@@ -209,12 +214,11 @@ where
 mod tests {
     use std::sync::Arc;
 
+    use super::{JobRegistry, JobRunner};
     use crate::{
         test_util::{TestContext, TestEnvironment},
         RunningJob,
     };
-
-    use super::{JobRegistry, JobRunner};
 
     async fn test_job(_job: RunningJob, _context: ()) -> Result<(), String> {
         Ok(())

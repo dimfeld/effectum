@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use prefect::{Job, JobRunner, Queue, RunningJob};
+use effectum::{Job, JobRunner, Queue, RunningJob};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use tracing::{event, Level};
@@ -65,13 +65,13 @@ pub async fn main() -> Result<(), eyre::Report> {
         .with(tree);
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
-    let queue = Queue::new(Path::new("prefect-examples.db")).await?;
+    let queue = Queue::new(Path::new("effectum-examples.db")).await?;
 
     let context = Arc::new(JobContext {
         counter: AtomicI64::new(0),
     });
 
-    let _worker = prefect::Worker::builder(&queue, context)
+    let _worker = effectum::Worker::builder(&queue, context)
         .jobs(vec![
             JobRunner::builder(ADD_COUNTER_JOB, add_counter).build()
         ])

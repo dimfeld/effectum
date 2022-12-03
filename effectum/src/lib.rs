@@ -7,7 +7,7 @@
 //! # use std::path::Path;
 //! # use serde::{Deserialize, Serialize};
 //! # use serde_json::json;
-//! use prefect::{Error, Job, JobState, JobRunner, RunningJob, Queue, Worker};
+//! use effectum::{Error, Job, JobState, JobRunner, RunningJob, Queue, Worker};
 //!
 //! #[derive(Debug)]
 //! pub struct JobContext {
@@ -29,7 +29,7 @@
 //! #[tokio::main(flavor = "current_thread")]
 //! async fn main() -> Result<(), Error> {
 //!   // Create a queue
-//!   let queue = Queue::new(Path::new("prefect.db")).await?;
+//!   let queue = Queue::new(Path::new("effectum.db")).await?;
 //!
 //!   // Define a job type for the queue.
 //!   let a_job = JobRunner::builder("remind_me", remind_me_job).build();

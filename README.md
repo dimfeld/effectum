@@ -1,4 +1,4 @@
-# prefect
+# Effectum
 
 A Rust job queue library, based on SQLite so it doesn't depend on any other services.
 
@@ -8,7 +8,7 @@ start with the embedded version to use minimal infrastructure, and then move to 
 the time comes to scale out.
 
 ```rust
-use prefect::{Error, Job, JobState, JobRunner, RunningJob, Queue, Worker};
+use effectum::{Error, Job, JobState, JobRunner, RunningJob, Queue, Worker};
 
 #[derive(Debug)]
 pub struct JobContext {
@@ -30,7 +30,7 @@ async fn remind_me_job(job: RunningJob, context: Arc<JobContext>) -> Result<(), 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
   // Create a queue
-  let queue = Queue::new(&PathBuf::from("prefect.db")).await?;
+  let queue = Queue::new(&PathBuf::from("effectum.db")).await?;
 
   // Define a type job for the queue.
   let a_job = JobRunner::builder("remind_me", remind_me_job).build();
@@ -65,9 +65,9 @@ async fn main() -> Result<(), Error> {
 }
 ```
 
-[Changelog](https://github.com/dimfeld/prefect/blob/master/prefect/CHANGELOG.md)
+[Changelog](https://github.com/dimfeld/effectum/blob/master/effectum/CHANGELOG.md)
 
-[Full Development Notes](https://imfeld.dev/notes/projects_prefect)
+[Full Development Notes](https://imfeld.dev/notes/projects_effectum)
 
 # Roadmap
 

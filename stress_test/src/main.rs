@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 use clap::Parser;
-use prefect::{Job, JobRegistry, JobRunner, JobState, Queue};
+use effectum::{Job, JobRegistry, JobRunner, JobState, Queue};
 use temp_dir::TempDir;
 
 #[derive(Parser, Debug)]
@@ -28,7 +28,7 @@ struct Args {
     num_submit_tasks: usize,
 }
 
-async fn empty_task(_job: prefect::RunningJob, _context: ()) -> Result<(), String> {
+async fn empty_task(_job: effectum::RunningJob, _context: ()) -> Result<(), String> {
     Ok(())
 }
 
@@ -56,7 +56,7 @@ async fn run() -> Result<()> {
         .unwrap_or(args.worker_max_concurrency);
 
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("prefect.db");
+    let path = dir.path().join("effectum.db");
     let queue = Arc::new(Queue::new(&path).await.unwrap());
 
     let empty_job = JobRunner::builder("empty", empty_task).build();
@@ -65,7 +65,7 @@ async fn run() -> Result<()> {
     let workers = futures::future::try_join_all(
         (0..args.num_workers)
             .map(|_| {
-                prefect::Worker::builder(&queue, ())
+                effectum::Worker::builder(&queue, ())
                     .registry(&registry)
                     .min_concurrency(min_concurrency)
                     .max_concurrency(args.worker_max_concurrency)
