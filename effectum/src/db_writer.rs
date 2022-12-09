@@ -4,19 +4,23 @@ use uuid::Uuid;
 
 use self::{
     add_job::{add_job, add_jobs, AddJobArgs, AddMultipleJobsArgs, AddMultipleJobsResult},
+    cancel_job::{cancel_job, CancelJobArgs},
     complete::{complete_job, CompleteJobArgs},
     heartbeat::{write_checkpoint, write_heartbeat, WriteCheckpointArgs, WriteHeartbeatArgs},
     ready_jobs::{get_ready_jobs, GetReadyJobsArgs, ReadyJob},
     retry::{retry_job, RetryJobArgs},
+    update_job::{update_job, UpdateJobArgs},
 };
 use crate::{error::Result, shared_state::SharedState, worker::log_error};
 
 pub(crate) mod add_job;
+pub(crate) mod cancel_job;
 pub(crate) mod complete;
 pub(crate) mod heartbeat;
 pub(crate) mod job_recovery;
 pub(crate) mod ready_jobs;
 pub(crate) mod retry;
+pub(crate) mod update_job;
 
 pub(crate) use job_recovery::handle_active_jobs_at_startup;
 
@@ -35,6 +39,8 @@ pub(crate) enum DbOperationType {
     WriteHeartbeat(WriteHeartbeatArgs),
     AddJob(AddJobArgs),
     AddMultipleJobs(AddMultipleJobsArgs),
+    UpdateJob(UpdateJobArgs),
+    CancelJob(CancelJobArgs),
 }
 
 struct OperationResult<T> {
@@ -49,6 +55,8 @@ enum DbOperationResult {
     GetReadyJobs(OperationResult<Vec<ReadyJob>>),
     AddJob(OperationResult<Uuid>),
     AddMultipleJobs(OperationResult<AddMultipleJobsResult>),
+    UpdateJob(OperationResult<String>),
+    CancelJob(OperationResult<()>),
 }
 
 impl DbOperationResult {
@@ -60,6 +68,8 @@ impl DbOperationResult {
             DbOperationResult::GetReadyJobs(result) => result.result.is_ok(),
             DbOperationResult::AddJob(result) => result.result.is_ok(),
             DbOperationResult::AddMultipleJobs(result) => result.result.is_ok(),
+            DbOperationResult::UpdateJob(result) => result.result.is_ok(),
+            DbOperationResult::CancelJob(result) => result.result.is_ok(),
         }
     }
 
@@ -79,6 +89,12 @@ impl DbOperationResult {
                 result.result_tx.send(result.result).ok();
             }
             DbOperationResult::AddMultipleJobs(result) => {
+                result.result_tx.send(result.result).ok();
+            }
+            DbOperationResult::UpdateJob(result) => {
+                result.result_tx.send(result.result).ok();
+            }
+            DbOperationResult::CancelJob(result) => {
                 result.result_tx.send(result.result).ok();
             }
         };
@@ -115,6 +131,8 @@ fn process_operations(
                     }
                     DbOperationType::AddJob(args) => add_job(&sp, args),
                     DbOperationType::AddMultipleJobs(args) => add_jobs(&sp, args),
+                    DbOperationType::UpdateJob(args) => update_job(&sp, args),
+                    DbOperationType::CancelJob(args) => cancel_job(&sp, args),
                     DbOperationType::Close => {
                         closed = true;
                         DbOperationResult::Close

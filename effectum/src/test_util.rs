@@ -96,10 +96,11 @@ pub async fn create_test_queue() -> TestQueue {
 }
 
 pub fn job_list() -> Vec<JobRunner<Arc<TestContext>>> {
-    let count_task = JobRunner::builder("counter", |_job, context: Arc<TestContext>| async move {
+    let count_task = JobRunner::builder("counter", |job, context: Arc<TestContext>| async move {
+        let payload: usize = job.json_payload().unwrap_or(1);
         context
             .counter
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(payload, std::sync::atomic::Ordering::Relaxed);
         Ok::<_, String>("passed")
     })
     .build();
@@ -255,11 +256,11 @@ pub async fn wait_for_job(label: impl Display, queue: &Queue, job_id: Uuid) -> J
     wait_for_job_status(label, queue, job_id, JobState::Succeeded).await
 }
 
-pub async fn wait_for_job_status(
+pub async fn wait_for_job_fn(
     label: impl Display,
     queue: &Queue,
     job_id: Uuid,
-    desired_status: JobState,
+    f: impl Fn(&JobStatus) -> bool,
 ) -> JobStatus {
     wait_for(label, || async {
         let status = match queue.get_job_status(job_id).await {
@@ -270,11 +271,23 @@ pub async fn wait_for_job_status(
             }
         };
 
-        if status.state == desired_status {
+        if f(&status) {
             Ok(status)
         } else {
             Err(format!("job status {:?}", status))
         }
+    })
+    .await
+}
+
+pub async fn wait_for_job_status(
+    label: impl Display,
+    queue: &Queue,
+    job_id: Uuid,
+    desired_status: JobState,
+) -> JobStatus {
+    wait_for_job_fn(label, queue, job_id, |status| {
+        status.state == desired_status
     })
     .await
 }

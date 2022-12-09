@@ -81,7 +81,7 @@ mod sqlite_functions;
 mod test_util;
 mod worker;
 
-pub use add_job::{Job, JobBuilder, Retries};
+pub use add_job::{Job, JobBuilder, JobUpdate, JobUpdateBuilder, Retries};
 pub use error::{Error, Result};
 pub use job::{RunningJob, RunningJobData};
 pub use job_registry::{JobRegistry, JobRunner, JobRunnerBuilder};

@@ -1,10 +1,11 @@
-use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue;
-use smallvec::SmallVec;
 use std::{
     fmt::{Debug, Display},
     str::FromStr,
 };
+
+use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
+use smallvec::SmallVec;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -36,6 +37,8 @@ pub enum JobState {
     Succeeded,
     /// The job failed and exceeded its retry limit. It will not be retried.
     Failed,
+    /// The job was cancelled by the user.
+    Cancelled,
 }
 
 impl JobState {
@@ -46,6 +49,7 @@ impl JobState {
             JobState::Running => "running",
             JobState::Succeeded => "succeeded",
             JobState::Failed => "failed",
+            JobState::Cancelled => "cancelled",
         }
     }
 }
@@ -65,6 +69,7 @@ impl FromStr for JobState {
             "running" => Ok(JobState::Running),
             "succeeded" => Ok(JobState::Succeeded),
             "failed" => Ok(JobState::Failed),
+            "cancelled" => Ok(JobState::Cancelled),
             _ => Err(Error::InvalidJobState(s.to_string())),
         }
     }
