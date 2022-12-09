@@ -80,15 +80,15 @@ async fn main() -> Result<(), Error> {
 - Automatically retry failed jobs, with exponential backoff
 - Checkpoints to allow smart resumption of a job if it fails midway through.
 - Immediately schedule a retry for jobs that were running when the process restarts unexpectedly
+- Cancel or modify pending jobs
 
 ## Soon
 
 - Optional sweeper to prevent "done" job data from building up indefinitely
 - Create recurring scheduled jobs
-- Cancel or modify pending jobs
 
 ## Later
 
 - Node.js bindings
-- Run as a standalone server over HTTP or gRPC
+- Run as a standalone server over gRPC
 - Helpers for communicating with the queue via the outbox pattern.
