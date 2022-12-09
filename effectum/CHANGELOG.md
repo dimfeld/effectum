@@ -1,3 +1,7 @@
+# 0.1.5
+
+- Support updating and cancelling jobs that have been submitted, but have not yet run.
+
 # 0.1.4
 
 - effectum now handles jobs that were left unfinished due to an unexpected process restart. It treats these as failures,
