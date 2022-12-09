@@ -49,6 +49,12 @@ pub enum Error {
     /// fashion.
     #[error("Timed out")]
     Timeout,
+    /// The job could not be modified or cancelled because it is currently running.
+    #[error("Job is running")]
+    JobRunning,
+    /// The job could not be modified or cancelled because it has already finished.
+    #[error("Job is finished")]
+    JobFinished,
     /// The current job has expired.
     #[error("Job expired")]
     Expired,
