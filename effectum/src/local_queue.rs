@@ -8,7 +8,7 @@ use crate::{
     db_writer::{db_writer_worker, handle_active_jobs_at_startup, DbOperation, DbOperationType},
     error::*,
     pending_jobs::monitor_pending_jobs,
-    recurring::schedule_needed_recurring_jobs,
+    recurring::schedule_needed_recurring_jobs_at_startup,
     shared_state::{SharedState, SharedStateData},
     sqlite_functions::register_functions,
     worker::log_error,
@@ -123,7 +123,7 @@ impl Queue {
         let pending_jobs_monitor =
             monitor_pending_jobs(shared_state.clone(), pending_jobs_rx).await?;
 
-        schedule_needed_recurring_jobs(&shared_state).await?;
+        schedule_needed_recurring_jobs_at_startup(&shared_state).await?;
         // TODO Optional task to delete old jobs from `done_jobs`
 
         let q = Queue {

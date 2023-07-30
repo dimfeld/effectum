@@ -1,12 +1,13 @@
-use std::{rc::Rc, time::Duration};
+use std::{rc::Rc, str::FromStr, time::Duration};
 
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
-use crate::{shared_state::SharedState, Error, Job, JobBuilder};
+use crate::{shared_state::SharedState, Error, Job, JobBuilder, Queue};
 
-pub(crate) async fn schedule_needed_recurring_jobs_at_start(
+pub(crate) async fn schedule_needed_recurring_jobs_at_startup(
     queue: &SharedState,
 ) -> Result<(), Error> {
     let conn = queue.read_conn_pool.get().await?;
@@ -15,8 +16,8 @@ pub(crate) async fn schedule_needed_recurring_jobs_at_start(
         .interact(move |db| {
             let query = r##"SELECT base_job_id
                 FROM recurring
-                JOIN jobs on jobs.job_id = recurring.base_job_id
-                LEFT JOIN active_jobs ON recurring.id = active_jobs.from_recurring
+                JOIN jobs on recurring.base_job_id = jobs.job_id
+                LEFT JOIN active_jobs ON recurring.base_job_id = active_jobs.from_recurring
                 WHERE active_jobs.job_id IS NULL"##;
             let mut stmt = db.prepare(query)?;
             let rows = stmt
@@ -61,33 +62,27 @@ pub(crate) async fn schedule_recurring_jobs(queue: &SharedState, ids: &[i64]) ->
                         .as_str()
                         .map(|s| s.to_string())
                         .map_err(|e| Error::ColumnType(e.into(), "job_type"))?;
-                    let priority = row
-                        .get(2)
-                        .map_err(|e| Error::ColumnType(e.into(), "priority"))?;
-                    let weight = row
-                        .get(3)
-                        .map_err(|e| Error::ColumnType(e.into(), "weight"))?;
-                    let payload = row
-                        .get(4)
-                        .map_err(|e| Error::ColumnType(e.into(), "payload"))?;
+                    let priority = row.get(2).map_err(|e| Error::ColumnType(e, "priority"))?;
+                    let weight = row.get(3).map_err(|e| Error::ColumnType(e, "weight"))?;
+                    let payload = row.get(4).map_err(|e| Error::ColumnType(e, "payload"))?;
                     let max_retries = row
                         .get(5)
-                        .map_err(|e| Error::ColumnType(e.into(), "max_retries"))?;
+                        .map_err(|e| Error::ColumnType(e, "max_retries"))?;
                     let backoff_multiplier = row
                         .get(6)
-                        .map_err(|e| Error::ColumnType(e.into(), "backoff_multiplier"))?;
+                        .map_err(|e| Error::ColumnType(e, "backoff_multiplier"))?;
                     let backoff_randomization = row
                         .get(7)
-                        .map_err(|e| Error::ColumnType(e.into(), "backoff_randomization"))?;
+                        .map_err(|e| Error::ColumnType(e, "backoff_randomization"))?;
                     let backoff_initial_interval = row
                         .get(8)
-                        .map_err(|e| Error::ColumnType(e.into(), "backoff_initial_interval"))?;
+                        .map_err(|e| Error::ColumnType(e, "backoff_initial_interval"))?;
                     let default_timeout = row
                         .get(9)
-                        .map_err(|e| Error::ColumnType(e.into(), "default_timeout"))?;
+                        .map_err(|e| Error::ColumnType(e, "default_timeout"))?;
                     let heartbeat_increment = row
                         .get(10)
-                        .map_err(|e| Error::ColumnType(e.into(), "heartbeat_increment"))?;
+                        .map_err(|e| Error::ColumnType(e, "heartbeat_increment"))?;
                     let schedule = row
                         .get_ref(11)?
                         .as_str()
@@ -114,12 +109,13 @@ pub(crate) async fn schedule_recurring_jobs(queue: &SharedState, ids: &[i64]) ->
 
                     Ok::<_, Error>(job)
                 })?
-                .into_iter()
                 .collect::<Result<Vec<Job>, Error>>()?;
 
             Ok::<_, Error>(rows)
         })
         .await??;
+
+    queue.add_jobs(jobs).await?;
 
     Ok(())
 }
@@ -131,5 +127,63 @@ pub enum RecurringJobSchedule {
 }
 
 pub(crate) fn find_next_job_time(schedule: &RecurringJobSchedule) -> Result<OffsetDateTime, Error> {
-    todo!()
+    match schedule {
+        RecurringJobSchedule::Cron { spec } => {
+            let sched = cron::Schedule::from_str(spec).map_err(|_| Error::InvalidSchedule)?;
+            let next = sched
+                .upcoming(chrono::Utc)
+                .next()
+                .ok_or(Error::InvalidSchedule)?;
+            // The `cron` package uses chrono but everything else here uses `time`, so convert.
+            let next = OffsetDateTime::from_unix_timestamp(next.timestamp())
+                .map_err(|_| Error::InvalidSchedule)?;
+            Ok(next)
+        }
+    }
+}
+
+impl Queue {
+    /// Add a new recurring job to the queue, returning an error if a job with this external ID
+    /// already exists.
+    pub async fn add_recurring_job(
+        &self,
+        id: &str,
+        schedule: RecurringJobSchedule,
+        job: Job,
+    ) -> Result<Uuid, Error> {
+        // Add the job and the recurring job info.
+        // Schedule the recurring job.
+        todo!();
+    }
+
+    /// Update a recurring job. Returns an error if the job does not exist.
+    pub async fn update_recurring_job(
+        &self,
+        id: &str,
+        schedule: RecurringJobSchedule,
+        job: Job,
+    ) -> Result<(), Error> {
+        // Update the base recurring job
+        // Update any pending scheduled jobs for this job.
+        todo!()
+    }
+
+    /// Add a new recurring job, or update an existing one.
+    pub async fn upsert_recurring_job(
+        &self,
+        id: &str,
+        schedule: RecurringJobSchedule,
+        job: Job,
+    ) -> Result<(), Error> {
+        // Upsert the base recurring job
+        // If newly added, schedule the job. Otherwise update any pending scheduled jobs for this job.
+        todo!()
+    }
+
+    /// Remove a recurring job and unschedule any scheduled jobs for it.
+    pub async fn delete_recurring_job(&self, id: &str) -> Result<(), Error> {
+        // Delete the base recurring job
+        // Cancel any pending scheduled jobs for this job.
+        todo!()
+    }
 }
