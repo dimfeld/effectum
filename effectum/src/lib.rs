@@ -32,7 +32,7 @@
 //!   let queue = Queue::new(Path::new("effectum.db")).await?;
 //!
 //!   // Define a job type for the queue.
-//!   let a_job = JobRunner::builder("remind_me", remind_me_job).build();
+//!   let remind_job = JobRunner::builder("remind_me", remind_me_job).build();
 //!
 //!   let context = Arc::new(JobContext{
 //!     // database pool or other things here
@@ -41,12 +41,12 @@
 //!   // Create a worker to run jobs.
 //!   let worker = Worker::builder(&queue, context)
 //!     .max_concurrency(10)
-//!     .jobs([a_job])
+//!     .jobs([remind_job])
 //!     .build();
 //!
 //!   // Submit a job to the queue.
 //!   let job_id = Job::builder("remind_me")
-//!     .run_at(time::OffsetDateTime::now_utc() + std::time::Duration::from_secs(3600))
+//!     .run_at(time::OffsetDateTime::now_utc() + std::time::Duration::from_secs(10))
 //!     .json_payload(&RemindMePayload {
 //!         email: "me@example.com".to_string(),
 //!         message: "Time to go!".to_string()
@@ -76,6 +76,7 @@ mod job;
 mod job_registry;
 mod local_queue;
 mod pending_jobs;
+mod recurring;
 mod sqlite_functions;
 #[cfg(test)]
 mod test_util;

@@ -39,6 +39,9 @@ pub enum JobState {
     Failed,
     /// The job was cancelled by the user.
     Cancelled,
+    /// This job is a template for a recurring job. Other jobs will be created from this job but
+    /// this instance will not be run.
+    RecurringBase,
 }
 
 impl JobState {
@@ -50,6 +53,7 @@ impl JobState {
             JobState::Succeeded => "succeeded",
             JobState::Failed => "failed",
             JobState::Cancelled => "cancelled",
+            JobState::RecurringBase => "recurring_base",
         }
     }
 }
@@ -70,6 +74,7 @@ impl FromStr for JobState {
             "succeeded" => Ok(JobState::Succeeded),
             "failed" => Ok(JobState::Failed),
             "cancelled" => Ok(JobState::Cancelled),
+            "recurring_base" => Ok(JobState::RecurringBase),
             _ => Err(Error::InvalidJobState(s.to_string())),
         }
     }

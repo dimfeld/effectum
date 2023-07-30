@@ -64,6 +64,9 @@ pub enum Error {
     /// Indicates that the queue has closed, and so the attempted operation could not be completed.
     #[error("Queue closed unexpectedly")]
     QueueClosed,
+    /// The passed schedule specification is invalid
+    #[error("Invalid schedule specification")]
+    InvalidSchedule,
 }
 
 impl From<InteractError> for Error {

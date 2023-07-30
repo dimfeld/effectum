@@ -42,6 +42,7 @@ pub struct Job {
     pub timeout: Duration,
     /// How much extra time a heartbeat will add to the expiration time.
     pub heartbeat_increment: Duration,
+    from_recurring: Option<i64>,
 }
 
 impl Job {
@@ -89,6 +90,7 @@ impl Default for Job {
             retries: Default::default(),
             timeout: Duration::from_secs(300),
             heartbeat_increment: Duration::from_secs(120),
+            from_recurring: Default::default(),
         }
     }
 }
@@ -179,6 +181,11 @@ impl JobBuilder {
     /// Set the heartbeat increment of the job.
     pub fn heartbeat_increment(mut self, heartbeat_increment: Duration) -> Self {
         self.job.heartbeat_increment = heartbeat_increment;
+        self
+    }
+
+    pub(crate) fn from_recurring(mut self, recurring_id: i64) -> Self {
+        self.job.from_recurring = Some(recurring_id);
         self
     }
 

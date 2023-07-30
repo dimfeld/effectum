@@ -1,13 +1,10 @@
-use rusqlite::Statement;
-use rusqlite::{named_params, Connection};
+use rusqlite::{named_params, Connection, Statement};
 use time::OffsetDateTime;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use crate::Job;
-use crate::Result;
-
 use super::DbOperationResult;
+use crate::{Job, Result};
 
 pub(crate) struct AddJobArgs {
     pub job: Job,
