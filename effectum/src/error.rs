@@ -67,6 +67,8 @@ pub enum Error {
     /// The passed schedule specification is invalid
     #[error("Invalid schedule specification")]
     InvalidSchedule,
+    #[error("Recurring job {0} already exists")]
+    RecurringJobAlreadyExists(String),
 }
 
 impl From<InteractError> for Error {

@@ -8,6 +8,9 @@ use self::{
     complete::{complete_job, CompleteJobArgs},
     heartbeat::{write_checkpoint, write_heartbeat, WriteCheckpointArgs, WriteHeartbeatArgs},
     ready_jobs::{get_ready_jobs, GetReadyJobsArgs, ReadyJob},
+    recurring::{
+        add_recurring_job, delete_recurring_job, AddRecurringJobArgs, DeleteRecurringJobArgs,
+    },
     retry::{retry_job, RetryJobArgs},
     update_job::{update_job, UpdateJobArgs},
 };
@@ -19,10 +22,17 @@ pub(crate) mod complete;
 pub(crate) mod heartbeat;
 pub(crate) mod job_recovery;
 pub(crate) mod ready_jobs;
+pub(crate) mod recurring;
 pub(crate) mod retry;
 pub(crate) mod update_job;
 
 pub(crate) use job_recovery::handle_active_jobs_at_startup;
+
+pub enum UpsertMode {
+    Add,
+    Update,
+    Upsert,
+}
 
 pub(crate) struct DbOperation {
     pub worker_id: u64,
@@ -41,6 +51,8 @@ pub(crate) enum DbOperationType {
     AddMultipleJobs(AddMultipleJobsArgs),
     UpdateJob(UpdateJobArgs),
     CancelJob(CancelJobArgs),
+    AddRecurringJob(AddRecurringJobArgs),
+    DeleteRecurringJob(DeleteRecurringJobArgs),
 }
 
 struct OperationResult<T> {
@@ -57,7 +69,8 @@ enum DbOperationResult {
     AddMultipleJobs(OperationResult<AddMultipleJobsResult>),
     UpdateJob(OperationResult<String>),
     CancelJob(OperationResult<()>),
-}
+    DeleteRecurringJob(OperationResult<()>),
+
 
 impl DbOperationResult {
     fn is_ok(&self) -> bool {
@@ -70,6 +83,7 @@ impl DbOperationResult {
             DbOperationResult::AddMultipleJobs(result) => result.result.is_ok(),
             DbOperationResult::UpdateJob(result) => result.result.is_ok(),
             DbOperationResult::CancelJob(result) => result.result.is_ok(),
+            DbOperationResult::DeleteRecurringJob(result) => result.result.is_ok(),
         }
     }
 
@@ -95,6 +109,9 @@ impl DbOperationResult {
                 result.result_tx.send(result.result).ok();
             }
             DbOperationResult::CancelJob(result) => {
+                result.result_tx.send(result.result).ok();
+            }
+            DbOperationResult::DeleteRecurringJob(result) => {
                 result.result_tx.send(result.result).ok();
             }
         };
@@ -133,6 +150,8 @@ fn process_operations(
                     DbOperationType::AddMultipleJobs(args) => add_jobs(&sp, args),
                     DbOperationType::UpdateJob(args) => update_job(&sp, args),
                     DbOperationType::CancelJob(args) => cancel_job(&sp, args),
+                    DbOperationType::AddRecurringJob(args) => add_recurring_job(&sp, args),
+                    DbOperationType::DeleteRecurringJob(args) => delete_recurring_job(&sp, args),
                     DbOperationType::Close => {
                         closed = true;
                         DbOperationResult::Close

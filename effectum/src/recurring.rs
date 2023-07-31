@@ -3,9 +3,16 @@ use std::{rc::Rc, str::FromStr, time::Duration};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use uuid::Uuid;
+use tracing::Span;
 
-use crate::{shared_state::SharedState, Error, Job, JobBuilder, Queue};
+use crate::{
+    db_writer::{
+        recurring::{AddRecurringJobArgs, DeleteRecurringJobArgs},
+        DbOperation, UpsertMode,
+    },
+    shared_state::SharedState,
+    Error, Job, JobBuilder, Queue,
+};
 
 pub(crate) async fn schedule_needed_recurring_jobs_at_startup(
     queue: &SharedState,
@@ -49,7 +56,7 @@ pub(crate) async fn schedule_recurring_jobs(queue: &SharedState, ids: &[i64]) ->
                 default_timeout, heartbeat_increment, schedule
             FROM jobs
             JOIN recurring ON job_id = base_job_id
-            WHERE status = 'recurring_base' AND job_id IN rarray($1)
+            WHERE status = 'recurring_base' AND job_id IN rarray(?)
             "##;
 
             let mut stmt = db.prepare_cached(query)?;
@@ -92,7 +99,7 @@ pub(crate) async fn schedule_recurring_jobs(queue: &SharedState, ids: &[i64]) ->
                                 .map_err(|_| Error::InvalidSchedule)
                         })?;
 
-                    let next_job_time = find_next_job_time(&schedule)?;
+                    let next_job_time = schedule.find_next_job_time()?;
                     let job = JobBuilder::new(job_type)
                         .priority(priority)
                         .weight(weight)
@@ -120,24 +127,26 @@ pub(crate) async fn schedule_recurring_jobs(queue: &SharedState, ids: &[i64]) ->
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename = "snake_case")]
 pub enum RecurringJobSchedule {
     Cron { spec: String },
 }
 
-pub(crate) fn find_next_job_time(schedule: &RecurringJobSchedule) -> Result<OffsetDateTime, Error> {
-    match schedule {
-        RecurringJobSchedule::Cron { spec } => {
-            let sched = cron::Schedule::from_str(spec).map_err(|_| Error::InvalidSchedule)?;
-            let next = sched
-                .upcoming(chrono::Utc)
-                .next()
-                .ok_or(Error::InvalidSchedule)?;
-            // The `cron` package uses chrono but everything else here uses `time`, so convert.
-            let next = OffsetDateTime::from_unix_timestamp(next.timestamp())
-                .map_err(|_| Error::InvalidSchedule)?;
-            Ok(next)
+impl RecurringJobSchedule {
+    pub(crate) fn find_next_job_time(&self) -> Result<OffsetDateTime, Error> {
+        match self {
+            RecurringJobSchedule::Cron { spec } => {
+                let sched = cron::Schedule::from_str(spec).map_err(|_| Error::InvalidSchedule)?;
+                let next = sched
+                    .upcoming(chrono::Utc)
+                    .next()
+                    .ok_or(Error::InvalidSchedule)?;
+                // The `cron` package uses chrono but everything else here uses `time`, so convert.
+                let next = OffsetDateTime::from_unix_timestamp(next.timestamp())
+                    .map_err(|_| Error::InvalidSchedule)?;
+                Ok(next)
+            }
         }
     }
 }
@@ -147,43 +156,87 @@ impl Queue {
     /// already exists.
     pub async fn add_recurring_job(
         &self,
-        id: &str,
+        id: String,
         schedule: RecurringJobSchedule,
         job: Job,
-    ) -> Result<Uuid, Error> {
-        // Add the job and the recurring job info.
-        // Schedule the recurring job.
-        todo!();
+    ) -> Result<(), Error> {
+        self.do_recurring_job_update(UpsertMode::Add, id, schedule, job)
+            .await
     }
 
     /// Update a recurring job. Returns an error if the job does not exist.
     pub async fn update_recurring_job(
         &self,
-        id: &str,
+        id: String,
         schedule: RecurringJobSchedule,
         job: Job,
     ) -> Result<(), Error> {
-        // Update the base recurring job
-        // Update any pending scheduled jobs for this job.
-        todo!()
+        self.do_recurring_job_update(UpsertMode::Update, id, schedule, job)
+            .await
     }
 
     /// Add a new recurring job, or update an existing one.
     pub async fn upsert_recurring_job(
         &self,
-        id: &str,
+        id: String,
         schedule: RecurringJobSchedule,
         job: Job,
     ) -> Result<(), Error> {
-        // Upsert the base recurring job
-        // If newly added, schedule the job. Otherwise update any pending scheduled jobs for this job.
-        todo!()
+        self.do_recurring_job_update(UpsertMode::Upsert, id, schedule, job)
+            .await
+    }
+
+    async fn do_recurring_job_update(
+        &self,
+        upsert_mode: UpsertMode,
+        id: String,
+        schedule: RecurringJobSchedule,
+        job: Job,
+    ) -> Result<(), Error> {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let now = self.state.time.now();
+        let job_type = job.job_type.to_string();
+        self.state
+            .db_write_tx
+            .send(DbOperation {
+                worker_id: 0,
+                operation: crate::db_writer::DbOperationType::AddRecurringJob(
+                    AddRecurringJobArgs {
+                        external_id: id,
+                        now,
+                        schedule,
+                        upsert_mode,
+                        job,
+                        result_tx,
+                    },
+                ),
+                span: Span::current(),
+            })
+            .await
+            .map_err(|_| Error::QueueClosed)?;
+        let add_result = result_rx.await.map_err(|_| Error::QueueClosed)??;
+        if let Some(run_at) = add_result.new_run_at {
+            self.state.notify_for_job_type(now, run_at, &job_type);
+        }
+
+        Ok(())
     }
 
     /// Remove a recurring job and unschedule any scheduled jobs for it.
-    pub async fn delete_recurring_job(&self, id: &str) -> Result<(), Error> {
-        // Delete the base recurring job
-        // Cancel any pending scheduled jobs for this job.
-        todo!()
+    pub async fn delete_recurring_job(&self, id: String) -> Result<(), Error> {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        self.state
+            .db_write_tx
+            .send(DbOperation {
+                worker_id: 0,
+                span: Span::current(),
+                operation: crate::db_writer::DbOperationType::DeleteRecurringJob(
+                    DeleteRecurringJobArgs { id, result_tx },
+                ),
+            })
+            .await
+            .map_err(|_| Error::QueueClosed)?;
+        result_rx.await.map_err(|_| Error::QueueClosed)?;
+        Ok(())
     }
 }
