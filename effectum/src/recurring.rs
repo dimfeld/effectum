@@ -222,7 +222,7 @@ impl Queue {
             .map_err(|_| Error::QueueClosed)?;
         let add_result = result_rx.await.map_err(|_| Error::QueueClosed)??;
         if let Some(run_at) = add_result.new_run_at {
-            self.state.notify_for_job_type(now, run_at, &job_type);
+            self.state.notify_for_job_type(now, run_at, &job_type).await;
         }
 
         Ok(())
@@ -242,7 +242,50 @@ impl Queue {
             })
             .await
             .map_err(|_| Error::QueueClosed)?;
-        result_rx.await.map_err(|_| Error::QueueClosed)?;
+        result_rx.await.map_err(|_| Error::QueueClosed)??;
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    #[ignore]
+    async fn simple_recurring() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn bad_schedule() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn update_to_bad_schedule() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn update_nonexisting_error() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn add_already_existing_error() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn update_recurring_same_schedule() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn update_recurring_to_earlier() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn update_recurring_to_later() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn upsert_recurring() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn delete_recurring() {}
 }

@@ -71,7 +71,7 @@ fn do_add_recurring_job(
                     .map_err(|e| Error::ColumnType(e.into(), "schedule"))
                     .and_then(|s| {
                         serde_json::from_str::<RecurringJobSchedule>(s)
-                            .map_err(|e| Error::InvalidSchedule)
+                            .map_err(|_| Error::InvalidSchedule)
                     })?,
             ))
         })?
@@ -106,14 +106,15 @@ fn add_new_recurring_job(
     schedule: RecurringJobSchedule,
     mut job: Job,
 ) -> Result<AddRecurringJobResult> {
+    // Insert the base job
     let mut insert_job_stmt = tx.prepare_cached(INSERT_JOBS_QUERY)?;
     let (base_job_id, _) =
         execute_add_job_stmt(tx, &mut insert_job_stmt, &job, now, Some("recurring_base"))?;
 
-    // Add the recurring template
+    // Then add the recurring template
     let schedule_str = serde_json::to_string(&schedule).map_err(|_| Error::InvalidSchedule)?;
     let mut add_recurring_stmt = tx.prepare_cached(
-        r##"INSERT INTO recurring 
+        r##"INSERT INTO recurring
             (external_id, base_job_id, schedule)
             VALUES
             (?1, ?2, ?3)"##,
@@ -123,7 +124,7 @@ fn add_new_recurring_job(
     let recurring_id = tx.last_insert_rowid();
     let run_at = schedule.find_next_job_time(now)?;
 
-    // Add the job that will actually run.
+    // Finally, add the version of the job that will actually run the first time.
     job.from_recurring = Some(recurring_id);
     job.run_at = Some(run_at);
 
