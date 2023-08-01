@@ -28,7 +28,7 @@ pub(super) const INSERT_JOBS_QUERY: &str = r##"
         max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
         added_at, default_timeout, heartbeat_increment, run_info)
     VALUES
-    ($external_id, $job_type, 'active', $priority, $weight, $from_recurring_job, $run_at, $payload,
+    ($external_id, $job_type, $status, $priority, $weight, $from_recurring_job, $run_at, $payload,
         $max_retries, $backoff_multiplier, $backoff_randomization, $backoff_initial_interval,
         $added_at, $default_timeout, $heartbeat_increment, '[]')
 "##;
@@ -40,12 +40,12 @@ pub(super) const INSERT_ACTIVE_JOBS_QUERY: &str = r##"
     ($job_id, $priority, $run_at)
 "##;
 
-fn execute_add_job_stmt(
+pub(super) fn execute_add_job_stmt(
     tx: &Connection,
     jobs_stmt: &mut Statement,
     job_config: &Job,
     now: OffsetDateTime,
-    from_recurring_job: Option<i64>,
+    status: Option<&str>,
 ) -> Result<(i64, Uuid)> {
     let external_id: Uuid = ulid::Ulid::new().into();
     let run_time = job_config.run_at.unwrap_or(now).unix_timestamp();
@@ -55,7 +55,8 @@ fn execute_add_job_stmt(
         "$job_type": job_config.job_type,
         "$priority": job_config.priority,
         "$weight": job_config.weight,
-        "$from_recurring_job": from_recurring_job,
+        "$from_recurring_job": job_config.from_recurring,
+        "$status": status.unwrap_or("active"),
         "$run_at": run_time,
         "$payload": job_config.payload.as_slice(),
         "$max_retries": job_config.retries.max_retries,
@@ -72,8 +73,7 @@ fn execute_add_job_stmt(
     Ok((job_id, external_id))
 }
 
-fn execute_add_active_job_stmt(
-    tx: &Connection,
+pub(super) fn execute_add_active_job_stmt(
     active_jobs_stmt: &mut Statement,
     job_id: i64,
     job_config: &Job,
@@ -95,7 +95,7 @@ fn do_add_job(tx: &Connection, job_config: &Job, now: OffsetDateTime) -> Result<
 
     let (job_id, external_id) = execute_add_job_stmt(tx, &mut jobs_stmt, job_config, now, None)?;
 
-    execute_add_active_job_stmt(tx, &mut active_jobs_stmt, job_id, job_config, now)?;
+    execute_add_active_job_stmt(&mut active_jobs_stmt, job_id, job_config, now)?;
 
     Ok(external_id)
 }
@@ -124,7 +124,7 @@ fn do_add_jobs(
     for job_config in jobs {
         let (internal, external) =
             execute_add_job_stmt(tx, &mut jobs_stmt, &job_config, now, None)?;
-        execute_add_active_job_stmt(tx, &mut active_jobs_stmt, internal, &job_config, now)?;
+        execute_add_active_job_stmt(&mut active_jobs_stmt, internal, &job_config, now)?;
 
         ids.push(external);
     }

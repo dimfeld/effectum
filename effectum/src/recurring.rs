@@ -48,6 +48,7 @@ pub(crate) async fn schedule_recurring_jobs(queue: &SharedState, ids: &[i64]) ->
         .iter()
         .map(|id| rusqlite::types::Value::from(*id))
         .collect::<Vec<_>>();
+    let now = queue.time.now();
     let jobs = conn
         .interact(move |db| {
             let query = r##"SELECT job_id,
@@ -99,7 +100,7 @@ pub(crate) async fn schedule_recurring_jobs(queue: &SharedState, ids: &[i64]) ->
                                 .map_err(|_| Error::InvalidSchedule)
                         })?;
 
-                    let next_job_time = schedule.find_next_job_time()?;
+                    let next_job_time = schedule.find_next_job_time(now)?;
                     let job = JobBuilder::new(job_type)
                         .priority(priority)
                         .weight(weight)
@@ -134,14 +135,19 @@ pub enum RecurringJobSchedule {
 }
 
 impl RecurringJobSchedule {
-    pub(crate) fn find_next_job_time(&self) -> Result<OffsetDateTime, Error> {
+    pub(crate) fn find_next_job_time(
+        &self,
+        after: OffsetDateTime,
+    ) -> Result<OffsetDateTime, Error> {
         match self {
             RecurringJobSchedule::Cron { spec } => {
                 let sched = cron::Schedule::from_str(spec).map_err(|_| Error::InvalidSchedule)?;
-                let next = sched
-                    .upcoming(chrono::Utc)
-                    .next()
-                    .ok_or(Error::InvalidSchedule)?;
+                let after = chrono::DateTime::<chrono::Utc>::from_utc(
+                    chrono::NaiveDateTime::from_timestamp_opt(after.unix_timestamp(), 0)
+                        .ok_or(Error::TimestampOutOfRange("after"))?,
+                    chrono::Utc,
+                );
+                let next = sched.after(&after).next().ok_or(Error::InvalidSchedule)?;
                 // The `cron` package uses chrono but everything else here uses `time`, so convert.
                 let next = OffsetDateTime::from_unix_timestamp(next.timestamp())
                     .map_err(|_| Error::InvalidSchedule)?;

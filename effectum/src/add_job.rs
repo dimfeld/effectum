@@ -43,7 +43,7 @@ pub struct Job {
     pub timeout: Duration,
     /// How much extra time a heartbeat will add to the expiration time.
     pub heartbeat_increment: Duration,
-    from_recurring: Option<i64>,
+    pub(crate) from_recurring: Option<i64>,
 }
 
 impl Job {

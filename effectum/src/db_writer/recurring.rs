@@ -4,8 +4,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 use time::OffsetDateTime;
 use tokio::sync::oneshot;
 
-use super::{DbOperationResult, UpsertMode};
-use crate::{recurring::RecurringJobSchedule, Error, Job, Result};
+use super::{
+    add_job::{execute_add_active_job_stmt, INSERT_ACTIVE_JOBS_QUERY},
+    DbOperationResult, UpsertMode,
+};
+use crate::{
+    db_writer::add_job::{execute_add_job_stmt, INSERT_JOBS_QUERY},
+    recurring::RecurringJobSchedule,
+    Error, Job, Result,
+};
 
 pub(crate) struct DeleteRecurringJobArgs {
     pub id: String,
@@ -27,7 +34,7 @@ pub(crate) struct AddRecurringJobResult {
     pub new_run_at: Option<OffsetDateTime>,
 }
 
-pub fn add_recurring_job(tx: &Connection, args: AddRecurringJobArgs) -> DbOperationResult {
+pub(super) fn add_recurring_job(tx: &Connection, args: AddRecurringJobArgs) -> DbOperationResult {
     let AddRecurringJobArgs {
         external_id,
         now,
@@ -53,12 +60,12 @@ fn do_add_recurring_job(
         "SELECT recurring_job_id, base_job_id, schedule FROM recurring WHERE external_id = ?",
     )?;
     let recurring_job: Option<(i64, i64, RecurringJobSchedule)> = existing_job_stmt
-        .query_and_then([args.external_id], |row| {
+        .query_and_then([&external_id], |row| {
             Ok::<_, Error>((
                 row.get(0)
-                    .map_err(|e| Error::ColumnType(e.into(), "recurring_job_id"))?,
+                    .map_err(|e| Error::ColumnType(e, "recurring_job_id"))?,
                 row.get(1)
-                    .map_err(|e| Error::ColumnType(e.into(), "base_job_id"))?,
+                    .map_err(|e| Error::ColumnType(e, "base_job_id"))?,
                 row.get_ref(2)?
                     .as_str()
                     .map_err(|e| Error::ColumnType(e.into(), "schedule"))
@@ -71,44 +78,85 @@ fn do_add_recurring_job(
         .next()
         .transpose()?;
 
-    match (args.upsert_mode, recurring_job) {
+    match (upsert_mode, recurring_job) {
         (
             UpsertMode::Upsert | UpsertMode::Update,
             Some((recurring_job_id, base_job_id, old_schedule)),
-        ) => update_recurring_job_internal(tx, recurring_job_id, base_job_id, old_schedule, args),
-        (UpsertMode::Upsert | UpsertMode::Add, None) => add_recurring_job_internal(tx, args),
-        (UpsertMode::Add, Some(_)) => Err(Error::RecurringJobAlreadyExists(args.external_id)),
+        ) => update_existing_recurring_job(
+            tx,
+            recurring_job_id,
+            base_job_id,
+            now,
+            old_schedule,
+            schedule,
+            job,
+        ),
+        (UpsertMode::Upsert | UpsertMode::Add, None) => {
+            add_new_recurring_job(tx, external_id, now, schedule, job)
+        }
+        (UpsertMode::Add, Some(_)) => Err(Error::RecurringJobAlreadyExists(external_id)),
         (UpsertMode::Update, None) => Err(Error::NotFound),
     }
 }
 
-fn add_recurring_job_internal(
+fn add_new_recurring_job(
     tx: &Connection,
-    args: AddRecurringJobArgs,
+    external_id: String,
+    now: OffsetDateTime,
+    schedule: RecurringJobSchedule,
+    mut job: Job,
 ) -> Result<AddRecurringJobResult> {
-    // Add the base job
-    // Add the active job
+    let mut insert_job_stmt = tx.prepare_cached(INSERT_JOBS_QUERY)?;
+    let (base_job_id, _) =
+        execute_add_job_stmt(tx, &mut insert_job_stmt, &job, now, Some("recurring_base"))?;
+
     // Add the recurring template
-    todo!()
+    let schedule_str = serde_json::to_string(&schedule).map_err(|_| Error::InvalidSchedule)?;
+    let mut add_recurring_stmt = tx.prepare_cached(
+        r##"INSERT INTO recurring 
+            (external_id, base_job_id, schedule)
+            VALUES
+            (?1, ?2, ?3)"##,
+    )?;
+    add_recurring_stmt.execute(params![external_id, base_job_id, schedule_str])?;
+
+    let recurring_id = tx.last_insert_rowid();
+    let run_at = schedule.find_next_job_time(now)?;
+
+    // Add the job that will actually run.
+    job.from_recurring = Some(recurring_id);
+    job.run_at = Some(run_at);
+
+    let (job_id, _) = execute_add_job_stmt(tx, &mut insert_job_stmt, &job, now, None)?;
+    let mut active_insert_stmt = tx.prepare_cached(INSERT_ACTIVE_JOBS_QUERY)?;
+    execute_add_active_job_stmt(&mut active_insert_stmt, job_id, &job, now)?;
+
+    Ok(AddRecurringJobResult {
+        recurring_job_id: recurring_id,
+        base_job_id,
+        new_run_at: Some(run_at),
+    })
 }
 
-fn update_recurring_job_internal(
+fn update_existing_recurring_job(
     tx: &Connection,
     recurring_job_id: i64,
     base_job_id: i64,
+    now: OffsetDateTime,
     old_schedule: RecurringJobSchedule,
-    args: AddRecurringJobArgs,
+    new_schedule: RecurringJobSchedule,
+    job: Job,
 ) -> Result<AddRecurringJobResult> {
     // Update the recurring template
 
-    let next_time = if args.schedule != old_schedule {
-        let schedule = serde_json::to_string(&args.schedule).map_err(|_| Error::InvalidSchedule)?;
+    let next_time = if new_schedule != old_schedule {
+        let schedule = serde_json::to_string(&new_schedule).map_err(|_| Error::InvalidSchedule)?;
         let mut recurring_job_stmt = tx.prepare_cached(
             r##"UPDATE recurring SET
             schedule = ?1 WHERE recurring_job_id = ?2"##,
         )?;
         recurring_job_stmt.execute(params![schedule, recurring_job_id])?;
-        Some(args.schedule.find_next_job_time()?)
+        Some(new_schedule.find_next_job_time(now)?)
     } else {
         // No new time since the schedule did not change. We have to be careful to not reset the
         // next job time if the schedule did not change, since we could inadvertently skip a job if
@@ -134,16 +182,16 @@ fn update_recurring_job_internal(
     )?;
     base_update_stmt.execute(params![
         base_job_id,
-        args.job.job_type,
-        args.job.priority,
-        args.job.weight,
-        args.job.payload,
-        args.job.retries.max_retries,
-        args.job.retries.backoff_multiplier,
-        args.job.retries.backoff_randomization,
-        args.job.retries.backoff_initial_interval.as_secs(),
-        args.job.timeout.as_secs(),
-        args.job.heartbeat_increment.as_secs(),
+        job.job_type,
+        job.priority,
+        job.weight,
+        job.payload,
+        job.retries.max_retries,
+        job.retries.backoff_multiplier,
+        job.retries.backoff_randomization,
+        job.retries.backoff_initial_interval.as_secs(),
+        job.timeout.as_secs(),
+        job.heartbeat_increment.as_secs(),
     ])?;
 
     // Update any pending jobs
@@ -168,16 +216,16 @@ fn update_recurring_job_internal(
         .query_map(
             params![
                 next_time,
-                args.job.job_type,
-                args.job.priority,
-                args.job.weight,
-                args.job.payload,
-                args.job.retries.max_retries,
-                args.job.retries.backoff_multiplier,
-                args.job.retries.backoff_randomization,
-                args.job.retries.backoff_initial_interval.as_secs(),
-                args.job.timeout.as_secs(),
-                args.job.heartbeat_increment.as_secs(),
+                job.job_type,
+                job.priority,
+                job.weight,
+                job.payload,
+                job.retries.max_retries,
+                job.retries.backoff_multiplier,
+                job.retries.backoff_randomization,
+                job.retries.backoff_initial_interval.as_secs(),
+                job.timeout.as_secs(),
+                job.heartbeat_increment.as_secs(),
                 recurring_job_id,
             ],
             |row| row.get::<_, rusqlite::types::Value>(0),
@@ -190,15 +238,11 @@ fn update_recurring_job_internal(
             r##"UPDATE active_jobs
             SET
                 priority = ?,
-                run_at = ?
+                run_at = COALESCE(?, run_at)
             WHERE job_id in rarray(?) AND active_worker_id IS NULL"##,
         )?;
 
-        active_job_update_stmt.execute(params![
-            args.job.priority,
-            next_time,
-            Rc::new(updated_jobs)
-        ])?;
+        active_job_update_stmt.execute(params![job.priority, next_time, Rc::new(updated_jobs)])?;
     }
 
     Ok(AddRecurringJobResult {
@@ -208,7 +252,10 @@ fn update_recurring_job_internal(
     })
 }
 
-pub fn delete_recurring_job(tx: &Connection, args: DeleteRecurringJobArgs) -> DbOperationResult {
+pub(super) fn delete_recurring_job(
+    tx: &Connection,
+    args: DeleteRecurringJobArgs,
+) -> DbOperationResult {
     let DeleteRecurringJobArgs { id, result_tx } = args;
     let result = do_delete_recurring_job(tx, id);
     DbOperationResult::DeleteRecurringJob(super::OperationResult { result, result_tx })

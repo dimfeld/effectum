@@ -9,7 +9,8 @@ use self::{
     heartbeat::{write_checkpoint, write_heartbeat, WriteCheckpointArgs, WriteHeartbeatArgs},
     ready_jobs::{get_ready_jobs, GetReadyJobsArgs, ReadyJob},
     recurring::{
-        add_recurring_job, delete_recurring_job, AddRecurringJobArgs, DeleteRecurringJobArgs,
+        add_recurring_job, delete_recurring_job, AddRecurringJobArgs, AddRecurringJobResult,
+        DeleteRecurringJobArgs,
     },
     retry::{retry_job, RetryJobArgs},
     update_job::{update_job, UpdateJobArgs},
@@ -70,7 +71,8 @@ enum DbOperationResult {
     UpdateJob(OperationResult<String>),
     CancelJob(OperationResult<()>),
     DeleteRecurringJob(OperationResult<()>),
-
+    AddRecurringJob(OperationResult<AddRecurringJobResult>),
+}
 
 impl DbOperationResult {
     fn is_ok(&self) -> bool {
@@ -84,6 +86,7 @@ impl DbOperationResult {
             DbOperationResult::UpdateJob(result) => result.result.is_ok(),
             DbOperationResult::CancelJob(result) => result.result.is_ok(),
             DbOperationResult::DeleteRecurringJob(result) => result.result.is_ok(),
+            DbOperationResult::AddRecurringJob(result) => result.result.is_ok(),
         }
     }
 
@@ -112,6 +115,9 @@ impl DbOperationResult {
                 result.result_tx.send(result.result).ok();
             }
             DbOperationResult::DeleteRecurringJob(result) => {
+                result.result_tx.send(result.result).ok();
+            }
+            DbOperationResult::AddRecurringJob(result) => {
                 result.result_tx.send(result.result).ok();
             }
         };
