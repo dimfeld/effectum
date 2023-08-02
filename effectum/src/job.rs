@@ -1,7 +1,8 @@
-use std::fmt::{Debug, Display};
-use std::ops::Deref;
-use std::sync::atomic::AtomicI64;
-use std::sync::Arc;
+use std::{
+    fmt::{Debug, Display},
+    ops::Deref,
+    sync::{atomic::AtomicI64, Arc},
+};
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -9,14 +10,19 @@ use tokio::sync::Mutex;
 use tracing::{event, instrument, Level, Span};
 use uuid::Uuid;
 
-use crate::db_writer::complete::CompleteJobArgs;
-use crate::db_writer::heartbeat::{WriteCheckpointArgs, WriteHeartbeatArgs};
-use crate::db_writer::retry::RetryJobArgs;
-use crate::db_writer::{DbOperation, DbOperationType};
-use crate::job_status::RunInfo;
-use crate::shared_state::SharedState;
-use crate::worker::{log_error, WorkerId};
-use crate::{Error, Result, SmartString};
+use crate::{
+    db_writer::{
+        complete::CompleteJobArgs,
+        heartbeat::{WriteCheckpointArgs, WriteHeartbeatArgs},
+        retry::RetryJobArgs,
+        DbOperation, DbOperationType,
+    },
+    job_status::RunInfo,
+    recurring::schedule_recurring_jobs,
+    shared_state::SharedState,
+    worker::{log_error, WorkerId},
+    Error, Result, SmartString,
+};
 
 /// Information about a running job.
 #[derive(Debug, Clone)]
@@ -70,6 +76,8 @@ pub struct RunningJobData {
 
     pub(crate) done: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
     pub(crate) queue: SharedState,
+    pub(crate) from_recurring_job: Option<i64>,
+    pub(crate) orig_run_at: OffsetDateTime,
 }
 
 impl Debug for RunningJobData {
@@ -90,6 +98,8 @@ impl Debug for RunningJobData {
             .field("backoff_initial_interval", &self.backoff_initial_interval)
             .field("current_try", &self.current_try)
             .field("max_retries", &self.max_retries)
+            .field("from_recurring_job", &self.from_recurring_job)
+            .field("orig_run_at", &self.orig_run_at)
             .finish_non_exhaustive()
     }
 }
@@ -236,6 +246,10 @@ impl RunningJobData {
             .await
             .map_err(|_| Error::QueueClosed)?;
         result_rx.await.map_err(|_| Error::QueueClosed)??;
+
+        if let Some(recurring_job) = self.from_recurring_job {
+            schedule_recurring_jobs(&self.queue, self.orig_run_at, &[recurring_job]).await?;
+        }
 
         Ok(())
     }

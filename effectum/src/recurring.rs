@@ -36,19 +36,22 @@ pub(crate) async fn schedule_needed_recurring_jobs_at_startup(
         .await??;
     drop(conn);
 
-    schedule_recurring_jobs(queue, &needed_jobs).await?;
+    schedule_recurring_jobs(queue, OffsetDateTime::now_utc(), &needed_jobs).await?;
 
     Ok(())
 }
 
 /// Schedule jobs from recurring templates.
-pub(crate) async fn schedule_recurring_jobs(queue: &SharedState, ids: &[i64]) -> Result<(), Error> {
+pub(crate) async fn schedule_recurring_jobs(
+    queue: &SharedState,
+    from_time: OffsetDateTime,
+    ids: &[i64],
+) -> Result<(), Error> {
     let conn = queue.read_conn_pool.get().await?;
     let ids = ids
         .iter()
         .map(|id| rusqlite::types::Value::from(*id))
         .collect::<Vec<_>>();
-    let now = queue.time.now();
     let jobs = conn
         .interact(move |db| {
             let query = r##"SELECT job_id,
@@ -100,7 +103,7 @@ pub(crate) async fn schedule_recurring_jobs(queue: &SharedState, ids: &[i64]) ->
                                 .map_err(|_| Error::InvalidSchedule)
                         })?;
 
-                    let next_job_time = schedule.find_next_job_time(now)?;
+                    let next_job_time = schedule.find_next_job_time(from_time)?;
                     let job = JobBuilder::new(job_type)
                         .priority(priority)
                         .weight(weight)
@@ -132,9 +135,16 @@ pub(crate) async fn schedule_recurring_jobs(queue: &SharedState, ids: &[i64]) ->
 #[serde(tag = "type", rename = "snake_case")]
 pub enum RecurringJobSchedule {
     Cron { spec: String },
+    RepeatEvery { interval: Duration },
 }
 
 impl RecurringJobSchedule {
+    pub fn from_cron_string(spec: String) -> Result<Self, Error> {
+        // Make sure it parses ok.
+        cron::Schedule::from_str(&spec).map_err(|_| Error::InvalidSchedule)?;
+        Ok(Self::Cron { spec })
+    }
+
     pub(crate) fn find_next_job_time(
         &self,
         after: OffsetDateTime,
@@ -153,6 +163,7 @@ impl RecurringJobSchedule {
                     .map_err(|_| Error::InvalidSchedule)?;
                 Ok(next)
             }
+            RecurringJobSchedule::RepeatEvery { interval } => Ok(after + *interval),
         }
     }
 }
@@ -249,9 +260,31 @@ impl Queue {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use crate::{recurring::RecurringJobSchedule, test_util::TestEnvironment, JobBuilder};
+
     #[tokio::test]
     #[ignore]
-    async fn simple_recurring() {}
+    async fn simple_recurring() {
+        let test = TestEnvironment::new().await;
+        let _worker = test.worker().build().await.expect("Failed to build worker");
+        let job = JobBuilder::new("counter")
+            .json_payload(&serde_json::json!({ "value": 5 }))
+            .expect("json_payload")
+            .build();
+
+        test.queue
+            .add_recurring_job(
+                "job_id".to_string(),
+                RecurringJobSchedule::RepeatEvery {
+                    interval: Duration::from_millis(10),
+                },
+                job,
+            )
+            .await
+            .expect("add_recurring_job");
+    }
 
     #[tokio::test]
     #[ignore]

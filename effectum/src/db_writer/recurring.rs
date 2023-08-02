@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, CachedStatement, Connection, OptionalExtension, Statement};
 use time::OffsetDateTime;
 use tokio::sync::oneshot;
 
@@ -104,7 +104,7 @@ fn add_new_recurring_job(
     external_id: String,
     now: OffsetDateTime,
     schedule: RecurringJobSchedule,
-    mut job: Job,
+    job: Job,
 ) -> Result<AddRecurringJobResult> {
     // Insert the base job
     let mut insert_job_stmt = tx.prepare_cached(INSERT_JOBS_QUERY)?;
@@ -122,21 +122,36 @@ fn add_new_recurring_job(
     add_recurring_stmt.execute(params![external_id, base_job_id, schedule_str])?;
 
     let recurring_id = tx.last_insert_rowid();
-    let run_at = schedule.find_next_job_time(now)?;
 
-    // Finally, add the version of the job that will actually run the first time.
-    job.from_recurring = Some(recurring_id);
-    job.run_at = Some(run_at);
-
-    let (job_id, _) = execute_add_job_stmt(tx, &mut insert_job_stmt, &job, now, None)?;
-    let mut active_insert_stmt = tx.prepare_cached(INSERT_ACTIVE_JOBS_QUERY)?;
-    execute_add_active_job_stmt(&mut active_insert_stmt, job_id, &job, now)?;
+    let run_at =
+        schedule_next_recurring_job(tx, now, &mut insert_job_stmt, recurring_id, schedule, job)?;
 
     Ok(AddRecurringJobResult {
         recurring_job_id: recurring_id,
         base_job_id,
         new_run_at: Some(run_at),
     })
+}
+
+pub(super) fn schedule_next_recurring_job(
+    tx: &Connection,
+    now: OffsetDateTime,
+    insert_job_stmt: &mut Statement,
+    recurring_job_id: i64,
+    schedule: RecurringJobSchedule,
+    mut job: Job,
+) -> Result<OffsetDateTime, Error> {
+    let run_at = schedule.find_next_job_time(now)?;
+
+    // Finally, add the version of the job that will actually run the first time.
+    job.from_recurring = Some(recurring_job_id);
+    job.run_at = Some(run_at);
+
+    let (job_id, _) = execute_add_job_stmt(tx, insert_job_stmt, &job, now, None)?;
+    let mut active_insert_stmt = tx.prepare_cached(INSERT_ACTIVE_JOBS_QUERY)?;
+    execute_add_active_job_stmt(&mut active_insert_stmt, job_id, &job, now)?;
+
+    Ok(run_at)
 }
 
 fn update_existing_recurring_job(

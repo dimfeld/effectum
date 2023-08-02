@@ -1,9 +1,8 @@
 use rusqlite::{named_params, params, Connection};
 use tokio::sync::oneshot;
 
-use crate::{job_status::JobState, Error, Result};
-
 use super::DbOperationResult;
+use crate::{job_status::JobState, Error, Result};
 
 pub(crate) struct CompleteJobArgs {
     pub job_id: i64,
