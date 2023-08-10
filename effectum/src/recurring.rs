@@ -1,6 +1,6 @@
 use std::{rc::Rc, str::FromStr, time::Duration};
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use tracing::Span;
@@ -11,7 +11,7 @@ use crate::{
         DbOperation, UpsertMode,
     },
     shared_state::SharedState,
-    Error, Job, JobBuilder, Queue,
+    Error, Job, JobBuilder, JobStatus, Queue,
 };
 
 pub(crate) async fn schedule_needed_recurring_jobs_at_startup(
@@ -138,6 +138,16 @@ pub enum RecurringJobSchedule {
     RepeatEvery { interval: Duration },
 }
 
+#[derive(Debug)]
+pub struct RecurringJobInfo {
+    pub base_job: JobStatus,
+    pub schedule: RecurringJobSchedule,
+    /// The status of the last (or current) run.
+    pub last_run: Option<JobStatus>,
+    /// The next time the job will run, if it's not currently running.
+    pub next_run_at: Option<OffsetDateTime>,
+}
+
 impl RecurringJobSchedule {
     pub fn from_cron_string(spec: String) -> Result<Self, Error> {
         // Make sure it parses ok.
@@ -176,8 +186,9 @@ impl Queue {
         id: String,
         schedule: RecurringJobSchedule,
         job: Job,
+        run_immediately: bool,
     ) -> Result<(), Error> {
-        self.do_recurring_job_update(UpsertMode::Add, id, schedule, job)
+        self.do_recurring_job_update(UpsertMode::Add, id, schedule, job, run_immediately)
             .await
     }
 
@@ -188,7 +199,7 @@ impl Queue {
         schedule: RecurringJobSchedule,
         job: Job,
     ) -> Result<(), Error> {
-        self.do_recurring_job_update(UpsertMode::Update, id, schedule, job)
+        self.do_recurring_job_update(UpsertMode::Update, id, schedule, job, false)
             .await
     }
 
@@ -198,9 +209,16 @@ impl Queue {
         id: String,
         schedule: RecurringJobSchedule,
         job: Job,
+        run_immediately_on_insert: bool,
     ) -> Result<(), Error> {
-        self.do_recurring_job_update(UpsertMode::Upsert, id, schedule, job)
-            .await
+        self.do_recurring_job_update(
+            UpsertMode::Upsert,
+            id,
+            schedule,
+            job,
+            run_immediately_on_insert,
+        )
+        .await
     }
 
     async fn do_recurring_job_update(
@@ -209,6 +227,7 @@ impl Queue {
         id: String,
         schedule: RecurringJobSchedule,
         job: Job,
+        run_immediately_on_insert: bool,
     ) -> Result<(), Error> {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         let now = self.state.time.now();
@@ -225,6 +244,7 @@ impl Queue {
                         upsert_mode,
                         job,
                         result_tx,
+                        run_immediately_on_insert,
                     },
                 ),
                 span: Span::current(),
@@ -256,6 +276,75 @@ impl Queue {
         result_rx.await.map_err(|_| Error::QueueClosed)??;
         Ok(())
     }
+
+    /// Return information about a recurring job and its latest execution
+    pub async fn get_recurring_job_info(&self, id: String) -> Result<RecurringJobInfo, Error> {
+        let conn = self.state.read_conn_pool.get().await?;
+        let recurring_info = conn
+            .interact(move |db| {
+                let mut base_info_stmt = db.prepare_cached(
+                    r##"SELECT base_job_id, schedule
+                FROM recurring
+                WHERE external_id = ?"##,
+                )?;
+                let (base_job_id, schedule) = base_info_stmt.query_row(params![id], |row| {
+                    let base_job_id = row.get(0)?;
+                    let schedule = row.get::<_, String>(1)?;
+                    Ok((base_job_id, schedule))
+                })?;
+
+                let schedule: RecurringJobSchedule =
+                    serde_json::from_str(&schedule).map_err(|_| Error::InvalidSchedule)?;
+
+                let base_job_info =
+                    Self::run_job_status_query(db, crate::job_status::JobIdQuery::Id(base_job_id))?;
+
+                let mut find_last_run_stmt = db.prepare_cached(
+                    r##"SELECT job_id
+                    FROM jobs
+                    WHERE from_recurring_job = ? AND started_at IS NOT NULL
+                    ORDER BY started_at DESC
+                    LIMIT 1"##,
+                )?;
+
+                let last_run_id = find_last_run_stmt
+                    .query_row([base_job_id], |row| row.get::<_, i64>(0))
+                    .optional()?;
+
+                let last_run = if let Some(last_run_id) = last_run_id {
+                    Some(Self::run_job_status_query(
+                        db,
+                        crate::job_status::JobIdQuery::Id(last_run_id),
+                    )?)
+                } else {
+                    None
+                };
+
+                let mut next_run_stmt = db.prepare_cached(
+                    r##"SELECT orig_run_at
+                    FROM jobs
+                    WHERE from_recurring_job = ? AND started_at IS NULL
+                    LIMIT 1"##,
+                )?;
+
+                let next_run_at = next_run_stmt
+                    .query_row([base_job_id], |row| row.get::<_, i64>(0))
+                    .optional()?
+                    .map(OffsetDateTime::from_unix_timestamp)
+                    .transpose()
+                    .map_err(|_| Error::TimestampOutOfRange("orig_run_at"))?;
+
+                Ok::<_, Error>(RecurringJobInfo {
+                    base_job: base_job_info,
+                    schedule,
+                    last_run,
+                    next_run_at,
+                })
+            })
+            .await??;
+
+        Ok(recurring_info)
+    }
 }
 
 #[cfg(test)]
@@ -281,14 +370,24 @@ mod tests {
                     interval: Duration::from_millis(10),
                 },
                 job,
+                false,
             )
             .await
             .expect("add_recurring_job");
+        let now = test.time.now();
     }
 
     #[tokio::test]
     #[ignore]
-    async fn bad_schedule() {}
+    async fn run_immediately() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn failed_job_gets_rescheduled() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn add_with_bad_schedule() {}
 
     #[tokio::test]
     #[ignore]

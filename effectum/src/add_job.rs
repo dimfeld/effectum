@@ -399,6 +399,7 @@ impl Queue {
         self.state.add_job(job).await
     }
 
+    /// Submit multiple jobs to the queue
     pub async fn add_jobs(&self, jobs: Vec<Job>) -> Result<Vec<Uuid>> {
         self.state.add_jobs(jobs).await
     }

@@ -67,6 +67,7 @@ pub enum Error {
     /// The passed schedule specification is invalid
     #[error("Invalid schedule specification")]
     InvalidSchedule,
+    /// A recurring job with the same ID already exists
     #[error("Recurring job {0} already exists")]
     RecurringJobAlreadyExists(String),
 }

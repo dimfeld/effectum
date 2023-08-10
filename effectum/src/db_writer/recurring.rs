@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use rusqlite::{params, CachedStatement, Connection, OptionalExtension, Statement};
+use rusqlite::{params, Connection, OptionalExtension, Statement};
 use time::OffsetDateTime;
 use tokio::sync::oneshot;
 
@@ -26,6 +26,8 @@ pub(crate) struct AddRecurringJobArgs {
     pub upsert_mode: UpsertMode,
     pub job: Job,
     pub result_tx: oneshot::Sender<Result<AddRecurringJobResult>>,
+    /// If true, enqueue the job immediately instead of waiting for the next schedule time.
+    pub run_immediately_on_insert: bool,
 }
 
 pub(crate) struct AddRecurringJobResult {
@@ -42,8 +44,17 @@ pub(super) fn add_recurring_job(tx: &Connection, args: AddRecurringJobArgs) -> D
         upsert_mode,
         job,
         result_tx,
+        run_immediately_on_insert,
     } = args;
-    let result = do_add_recurring_job(tx, external_id, now, schedule, upsert_mode, job);
+    let result = do_add_recurring_job(
+        tx,
+        external_id,
+        now,
+        schedule,
+        run_immediately_on_insert,
+        upsert_mode,
+        job,
+    );
     DbOperationResult::AddRecurringJob(super::OperationResult { result, result_tx })
 }
 
@@ -52,6 +63,7 @@ fn do_add_recurring_job(
     external_id: String,
     now: OffsetDateTime,
     schedule: RecurringJobSchedule,
+    run_immediately_on_insert: bool,
     upsert_mode: UpsertMode,
     job: Job,
 ) -> Result<AddRecurringJobResult> {
@@ -91,9 +103,14 @@ fn do_add_recurring_job(
             schedule,
             job,
         ),
-        (UpsertMode::Upsert | UpsertMode::Add, None) => {
-            add_new_recurring_job(tx, external_id, now, schedule, job)
-        }
+        (UpsertMode::Upsert | UpsertMode::Add, None) => add_new_recurring_job(
+            tx,
+            external_id,
+            now,
+            schedule,
+            run_immediately_on_insert,
+            job,
+        ),
         (UpsertMode::Add, Some(_)) => Err(Error::RecurringJobAlreadyExists(external_id)),
         (UpsertMode::Update, None) => Err(Error::NotFound),
     }
@@ -104,6 +121,7 @@ fn add_new_recurring_job(
     external_id: String,
     now: OffsetDateTime,
     schedule: RecurringJobSchedule,
+    run_immediately_on_insert: bool,
     job: Job,
 ) -> Result<AddRecurringJobResult> {
     // Insert the base job
@@ -123,8 +141,11 @@ fn add_new_recurring_job(
 
     let recurring_id = tx.last_insert_rowid();
 
-    let run_at =
-        schedule_next_recurring_job(tx, now, &mut insert_job_stmt, recurring_id, schedule, job)?;
+    let run_at = if run_immediately_on_insert {
+        now
+    } else {
+        schedule_next_recurring_job(tx, now, &mut insert_job_stmt, recurring_id, schedule, job)?
+    };
 
     Ok(AddRecurringJobResult {
         recurring_job_id: recurring_id,
