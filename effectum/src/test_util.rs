@@ -224,6 +224,7 @@ where
         match f().await {
             Ok(value) => return value,
             Err(e) => {
+                tracing::trace!(%label, %e, "Checking... not ready yet");
                 last_error = e;
             }
         };
@@ -240,15 +241,11 @@ where
 
         check_interval = std::cmp::min(check_interval * 2, max_check);
         let sleep_time = std::cmp::min(
-            final_time - now,
-            time::Duration::milliseconds(check_interval),
+            (final_time - now).whole_milliseconds() as u64,
+            check_interval,
         );
 
-        // Since we're often using virtual time, we have to sleep here with the blocking
-        // APIs to actually wait.
-        tokio::task::spawn_blocking(move || std::thread::sleep(sleep_time.unsigned_abs()))
-            .await
-            .unwrap();
+        tokio::time::sleep(Duration::from_millis(sleep_time)).await;
     }
 }
 
