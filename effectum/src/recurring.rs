@@ -4,6 +4,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use tracing::Span;
+use uuid::Uuid;
 
 use crate::{
     db_writer::{
@@ -24,7 +25,7 @@ pub(crate) async fn schedule_needed_recurring_jobs_at_startup(
             let query = r##"SELECT base_job_id
                 FROM recurring
                 JOIN jobs on recurring.base_job_id = jobs.job_id
-                LEFT JOIN active_jobs ON recurring.base_job_id = active_jobs.from_recurring
+                LEFT JOIN active_jobs ON active_jobs.job_id = jobs.job_id
                 WHERE active_jobs.job_id IS NULL"##;
             let mut stmt = db.prepare(query)?;
             let rows = stmt
@@ -144,8 +145,8 @@ pub struct RecurringJobInfo {
     pub schedule: RecurringJobSchedule,
     /// The status of the last (or current) run.
     pub last_run: Option<JobStatus>,
-    /// The next time the job will run, if it's not currently running.
-    pub next_run_at: Option<OffsetDateTime>,
+    /// The job ID of the next job to run and its next time, if it's not currently running.
+    pub next_run: Option<(Uuid, OffsetDateTime)>,
 }
 
 impl RecurringJobSchedule {
@@ -321,24 +322,29 @@ impl Queue {
                 };
 
                 let mut next_run_stmt = db.prepare_cached(
-                    r##"SELECT orig_run_at
+                    r##"SELECT external_id, orig_run_at
                     FROM jobs
                     WHERE from_recurring_job = ? AND started_at IS NULL
                     LIMIT 1"##,
                 )?;
 
-                let next_run_at = next_run_stmt
-                    .query_row([base_job_id], |row| row.get::<_, i64>(0))
+                let next_run = next_run_stmt
+                    .query_row([base_job_id], |row| {
+                        Ok((row.get::<_, Uuid>(0)?, row.get::<_, i64>(1)?))
+                    })
                     .optional()?
-                    .map(OffsetDateTime::from_unix_timestamp)
-                    .transpose()
-                    .map_err(|_| Error::TimestampOutOfRange("orig_run_at"))?;
+                    .map(|(id, time)| {
+                        let time = OffsetDateTime::from_unix_timestamp(time)
+                            .map_err(|_| Error::TimestampOutOfRange("orig_run_at"))?;
+                        Ok::<_, Error>((id, time))
+                    })
+                    .transpose()?;
 
                 Ok::<_, Error>(RecurringJobInfo {
                     base_job: base_job_info,
                     schedule,
                     last_run,
-                    next_run_at,
+                    next_run,
                 })
             })
             .await??;
@@ -351,10 +357,15 @@ impl Queue {
 mod tests {
     use std::time::Duration;
 
-    use crate::{recurring::RecurringJobSchedule, test_util::TestEnvironment, JobBuilder};
+    use tracing::{event, Level};
 
-    #[tokio::test]
-    #[ignore]
+    use crate::{
+        recurring::RecurringJobSchedule,
+        test_util::{wait_for_job, TestEnvironment},
+        JobBuilder,
+    };
+
+    #[tokio::test(start_paused = true)]
     async fn simple_recurring() {
         let test = TestEnvironment::new().await;
         let _worker = test.worker().build().await.expect("Failed to build worker");
@@ -363,18 +374,66 @@ mod tests {
             .expect("json_payload")
             .build();
 
+        let start = test.time.now().replace_nanosecond(0).unwrap();
+        let schedule = RecurringJobSchedule::RepeatEvery {
+            interval: Duration::from_secs(10),
+        };
         test.queue
-            .add_recurring_job(
-                "job_id".to_string(),
-                RecurringJobSchedule::RepeatEvery {
-                    interval: Duration::from_millis(10),
-                },
-                job,
-                false,
-            )
+            .add_recurring_job("job_id".to_string(), schedule.clone(), job, false)
             .await
             .expect("add_recurring_job");
-        let now = test.time.now();
+        let job_status = test
+            .queue
+            .get_recurring_job_info("job_id".to_string())
+            .await
+            .expect("Retrieving job status");
+
+        assert!(job_status.last_run.is_none());
+        let (first_job_id, first_run_at) = job_status.next_run.expect("next_run_at");
+
+        let first_run_at = first_run_at.replace_nanosecond(0).unwrap();
+        assert_eq!(
+            first_run_at,
+            start + Duration::from_secs(10),
+            "first_run_at"
+        );
+        assert_eq!(job_status.schedule, schedule);
+
+        tokio::time::sleep_until(
+            test.time
+                .instant_for_timestamp(first_run_at.unix_timestamp()),
+        )
+        .await;
+
+        let result = wait_for_job("first run", &test.queue, first_job_id).await;
+        assert!(result.started_at.expect("started_at") >= start + Duration::from_secs(10));
+
+        let job_status = test
+            .queue
+            .get_recurring_job_info("job_id".to_string())
+            .await
+            .expect("Retrieving job status");
+
+        let last_run = job_status.last_run.as_ref().expect("last_run");
+        assert_eq!(last_run.id, first_job_id);
+        assert_eq!(last_run.orig_run_at, first_run_at);
+
+        event!(Level::INFO, ?job_status, "status after first job finished");
+        let (second_job_id, second_run_time) = job_status.next_run.expect("next_run");
+        assert_ne!(
+            first_job_id, second_job_id,
+            "second job must have different id from first job"
+        );
+        assert_eq!(second_run_time, first_run_at + Duration::from_secs(10));
+
+        tokio::time::sleep_until(
+            test.time
+                .instant_for_timestamp(second_run_time.unix_timestamp()),
+        )
+        .await;
+
+        let result = wait_for_job("second run", &test.queue, second_job_id).await;
+        assert!(result.started_at.expect("started_at") >= second_run_time);
     }
 
     #[tokio::test]
@@ -420,4 +479,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn delete_recurring() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn job_status_on_nonexistent_job() {}
 }

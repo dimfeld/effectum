@@ -644,7 +644,7 @@ mod tests {
     }
 
     // TODO Run this in virtual time once https://github.com/tokio-rs/tokio/pull/5115 is merged.
-    #[tokio::test]
+    #[tokio::test()]
     async fn manual_heartbeat() {
         let mut test = TestEnvironment::new().await;
         let job_def = JobRunner::builder(

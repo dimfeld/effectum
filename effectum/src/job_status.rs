@@ -138,7 +138,7 @@ impl Queue {
         id: JobIdQuery,
     ) -> Result<JobStatus> {
         let (id_column, job_id) = match id {
-            JobIdQuery::Id(id) => ("id", rusqlite::types::Value::from(id)),
+            JobIdQuery::Id(id) => ("job_id", rusqlite::types::Value::from(id)),
             JobIdQuery::ExternalId(external_id) => {
                 ("external_id", rusqlite::types::Value::from(external_id))
             }

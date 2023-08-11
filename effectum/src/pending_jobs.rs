@@ -2,15 +2,36 @@ use std::rc::Rc;
 
 use ahash::HashMap;
 use rusqlite::params;
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use time::OffsetDateTime;
+use tokio::{sync::mpsc, task::JoinHandle};
 use tracing::{event, instrument, Level};
 
-use crate::error::Result;
-use crate::shared_state::SharedState;
-use crate::{Error, SmartString};
+use crate::{error::Result, shared_state::SharedState, Error, SmartString};
 
 pub(crate) type ScheduledJobType = (SmartString, i64);
+
+enum NextTimeDisplay {
+    Time(OffsetDateTime),
+    Empty,
+}
+
+impl std::fmt::Display for NextTimeDisplay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Time(t) => write!(f, "{}", t),
+            Self::Empty => write!(f, "none"),
+        }
+    }
+}
+
+impl From<i64> for NextTimeDisplay {
+    fn from(t: i64) -> Self {
+        match OffsetDateTime::from_unix_timestamp(t) {
+            Ok(t) => Self::Time(t),
+            Err(_) => Self::Empty,
+        }
+    }
+}
 
 #[instrument(skip_all)]
 pub(crate) async fn monitor_pending_jobs(
@@ -37,7 +58,6 @@ pub(crate) async fn monitor_pending_jobs(
                     let name = SmartString::from(row.get_ref(0)?.as_str()?);
                     Ok((name, row.get(1)?))
                 })?
-                .into_iter()
                 .collect::<Result<Vec<ScheduledJobType>, _>>()?;
             Ok::<_, Error>(rows)
         })
@@ -92,7 +112,6 @@ async fn get_next_times(
                     let name = SmartString::from(row.get_ref(0)?.as_str()?);
                     Ok((name, row.get(1)?))
                 })?
-                .into_iter()
                 .collect::<Result<Vec<ScheduledJobType>, _>>()?;
             Ok::<_, Error>(rows)
         })
@@ -112,7 +131,8 @@ async fn pending_jobs_task(
     loop {
         let next_time = next_times.values().copied().min().unwrap_or(0);
 
-        event!(Level::TRACE, %next_time, "Waiting for pending job");
+        let next_time_pretty = NextTimeDisplay::from(next_time);
+        event!(Level::TRACE, next_time=%next_time_pretty, "Waiting for pending job");
 
         tokio::select! {
             _ = tokio::time::sleep_until(queue.time.instant_for_timestamp(next_time)), if next_time > 0 =>{
@@ -141,7 +161,8 @@ async fn pending_jobs_task(
                 }
             }
             Some((job_type, run_at)) = pending_job_rx.recv() => {
-                event!(Level::DEBUG, %job_type, %run_at, "Got pending job");
+                let run_at_pretty = NextTimeDisplay::from(run_at);
+                event!(Level::DEBUG, %job_type, run_at=%run_at_pretty, "Got pending job");
                 next_times.entry(job_type)
                     .and_modify(|ts| *ts = std::cmp::min(run_at, *ts))
                     .or_insert(run_at);
