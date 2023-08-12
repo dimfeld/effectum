@@ -42,6 +42,82 @@ pub(crate) async fn schedule_needed_recurring_jobs_at_startup(
     Ok(())
 }
 
+pub(crate) fn create_job_from_recurring_template(
+    db: &rusqlite::Connection,
+    from_time: OffsetDateTime,
+    ids: Vec<rusqlite::types::Value>,
+) -> Result<Vec<Job>, Error> {
+    let query = r##"SELECT job_id,
+                job_type, priority, weight, payload, max_retries,
+                backoff_multiplier, backoff_randomization, backoff_initial_interval,
+                default_timeout, heartbeat_increment, schedule
+            FROM jobs
+            JOIN recurring ON job_id = base_job_id
+            WHERE status = 'recurring_base' AND job_id IN rarray(?)
+            "##;
+
+    let mut stmt = db.prepare_cached(query)?;
+
+    let rows = stmt
+        .query_and_then(params![Rc::new(ids)], |row| {
+            let job_id: i64 = row.get(0)?;
+            let job_type = row
+                .get_ref(1)?
+                .as_str()
+                .map(|s| s.to_string())
+                .map_err(|e| Error::ColumnType(e.into(), "job_type"))?;
+            let priority = row.get(2).map_err(|e| Error::ColumnType(e, "priority"))?;
+            let weight = row.get(3).map_err(|e| Error::ColumnType(e, "weight"))?;
+            let payload = row.get(4).map_err(|e| Error::ColumnType(e, "payload"))?;
+            let max_retries = row
+                .get(5)
+                .map_err(|e| Error::ColumnType(e, "max_retries"))?;
+            let backoff_multiplier = row
+                .get(6)
+                .map_err(|e| Error::ColumnType(e, "backoff_multiplier"))?;
+            let backoff_randomization = row
+                .get(7)
+                .map_err(|e| Error::ColumnType(e, "backoff_randomization"))?;
+            let backoff_initial_interval = row
+                .get(8)
+                .map_err(|e| Error::ColumnType(e, "backoff_initial_interval"))?;
+            let default_timeout = row
+                .get(9)
+                .map_err(|e| Error::ColumnType(e, "default_timeout"))?;
+            let heartbeat_increment = row
+                .get(10)
+                .map_err(|e| Error::ColumnType(e, "heartbeat_increment"))?;
+            let schedule = row
+                .get_ref(11)?
+                .as_str()
+                .map_err(|e| Error::ColumnType(e.into(), "schedule"))
+                .and_then(|s| {
+                    serde_json::from_str::<RecurringJobSchedule>(s)
+                        .map_err(|_| Error::InvalidSchedule)
+                })?;
+
+            let next_job_time = schedule.find_next_job_time(from_time)?;
+            let job = JobBuilder::new(job_type)
+                .priority(priority)
+                .weight(weight)
+                .payload(payload)
+                .max_retries(max_retries)
+                .backoff_multiplier(backoff_multiplier)
+                .backoff_randomization(backoff_randomization)
+                .backoff_initial_interval(Duration::from_secs(backoff_initial_interval))
+                .timeout(Duration::from_secs(default_timeout))
+                .heartbeat_increment(Duration::from_secs(heartbeat_increment))
+                .from_recurring(job_id)
+                .run_at(next_job_time)
+                .build();
+
+            Ok::<_, Error>(job)
+        })?
+        .collect::<Result<Vec<Job>, Error>>()?;
+
+    Ok::<_, Error>(rows)
+}
+
 /// Schedule jobs from recurring templates.
 #[instrument(level = "debug", skip(queue))]
 pub(crate) async fn schedule_recurring_jobs(
@@ -55,77 +131,7 @@ pub(crate) async fn schedule_recurring_jobs(
         .map(|id| rusqlite::types::Value::from(*id))
         .collect::<Vec<_>>();
     let jobs = conn
-        .interact(move |db| {
-            let query = r##"SELECT job_id,
-                job_type, priority, weight, payload, max_retries,
-                backoff_multiplier, backoff_randomization, backoff_initial_interval,
-                default_timeout, heartbeat_increment, schedule
-            FROM jobs
-            JOIN recurring ON job_id = base_job_id
-            WHERE status = 'recurring_base' AND job_id IN rarray(?)
-            "##;
-
-            let mut stmt = db.prepare_cached(query)?;
-
-            let rows = stmt
-                .query_and_then(params![Rc::new(ids)], |row| {
-                    let job_id: i64 = row.get(0)?;
-                    let job_type = row
-                        .get_ref(1)?
-                        .as_str()
-                        .map(|s| s.to_string())
-                        .map_err(|e| Error::ColumnType(e.into(), "job_type"))?;
-                    let priority = row.get(2).map_err(|e| Error::ColumnType(e, "priority"))?;
-                    let weight = row.get(3).map_err(|e| Error::ColumnType(e, "weight"))?;
-                    let payload = row.get(4).map_err(|e| Error::ColumnType(e, "payload"))?;
-                    let max_retries = row
-                        .get(5)
-                        .map_err(|e| Error::ColumnType(e, "max_retries"))?;
-                    let backoff_multiplier = row
-                        .get(6)
-                        .map_err(|e| Error::ColumnType(e, "backoff_multiplier"))?;
-                    let backoff_randomization = row
-                        .get(7)
-                        .map_err(|e| Error::ColumnType(e, "backoff_randomization"))?;
-                    let backoff_initial_interval = row
-                        .get(8)
-                        .map_err(|e| Error::ColumnType(e, "backoff_initial_interval"))?;
-                    let default_timeout = row
-                        .get(9)
-                        .map_err(|e| Error::ColumnType(e, "default_timeout"))?;
-                    let heartbeat_increment = row
-                        .get(10)
-                        .map_err(|e| Error::ColumnType(e, "heartbeat_increment"))?;
-                    let schedule = row
-                        .get_ref(11)?
-                        .as_str()
-                        .map_err(|e| Error::ColumnType(e.into(), "schedule"))
-                        .and_then(|s| {
-                            serde_json::from_str::<RecurringJobSchedule>(s)
-                                .map_err(|_| Error::InvalidSchedule)
-                        })?;
-
-                    let next_job_time = schedule.find_next_job_time(from_time)?;
-                    let job = JobBuilder::new(job_type)
-                        .priority(priority)
-                        .weight(weight)
-                        .payload(payload)
-                        .max_retries(max_retries)
-                        .backoff_multiplier(backoff_multiplier)
-                        .backoff_randomization(backoff_randomization)
-                        .backoff_initial_interval(Duration::from_secs(backoff_initial_interval))
-                        .timeout(Duration::from_secs(default_timeout))
-                        .heartbeat_increment(Duration::from_secs(heartbeat_increment))
-                        .from_recurring(job_id)
-                        .run_at(next_job_time)
-                        .build();
-
-                    Ok::<_, Error>(job)
-                })?
-                .collect::<Result<Vec<Job>, Error>>()?;
-
-            Ok::<_, Error>(rows)
-        })
+        .interact(move |db| create_job_from_recurring_template(db, from_time, ids))
         .await??;
 
     queue.add_jobs(jobs).await?;
@@ -363,8 +369,8 @@ mod tests {
 
     use crate::{
         recurring::RecurringJobSchedule,
-        test_util::{wait_for, wait_for_job, TestEnvironment},
-        JobBuilder,
+        test_util::{wait_for, wait_for_job, wait_for_job_status, TestEnvironment},
+        JobBuilder, JobState,
     };
 
     #[tokio::test(start_paused = true)]
@@ -470,24 +476,34 @@ mod tests {
             .await
             .expect("add_recurring_job");
 
-        wait_for("first run", || async {
+        let job_status = wait_for("first run", || async {
             let val = test
                 .context
                 .counter
                 .load(std::sync::atomic::Ordering::Relaxed);
-            if val == 1 {
-                Ok(())
-            } else {
-                Err("first task did not finish".to_string())
+            if val < 1 {
+                return Err("first task did not finish".to_string());
             }
+
+            let job_status = test
+                .queue
+                .get_recurring_job_info("job_id".to_string())
+                .await
+                .expect("Retrieving job status");
+
+            if !job_status
+                .last_run
+                .as_ref()
+                .map(|j| j.state == JobState::Succeeded)
+                .unwrap_or(false)
+            {
+                return Err("task status not updated yet".to_string());
+            }
+
+            Ok(job_status)
         })
         .await;
 
-        let job_status = test
-            .queue
-            .get_recurring_job_info("job_id".to_string())
-            .await
-            .expect("Retrieving job status");
         event!(Level::INFO, ?job_status, "status after first job");
         // Depending on how fast things go, the job may or may not have started once we get here,
         // so we have to check both next_run and last_run.
@@ -515,20 +531,11 @@ mod tests {
             1
         );
 
-        let job_status = wait_for("next job to be set up after first run", || async {
-            let job_status = test
-                .queue
-                .get_recurring_job_info("job_id".to_string())
-                .await
-                .expect("Retrieving job status");
-
-            if job_status.next_run.is_none() {
-                Err("next_run not set up yet".to_string())
-            } else {
-                Ok(job_status)
-            }
-        })
-        .await;
+        let job_status = test
+            .queue
+            .get_recurring_job_info("job_id".to_string())
+            .await
+            .expect("Retrieving job status");
 
         let last_run = job_status.last_run.as_ref().expect("last_run");
         assert_eq!(last_run.id, first_job_id);
@@ -552,13 +559,61 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    #[ignore]
-    async fn failed_job_gets_rescheduled() {}
+    #[tokio::test(start_paused = true)]
+    async fn failed_job_gets_rescheduled() {
+        let test = TestEnvironment::new().await;
+        let _worker = test.worker().build().await.expect("Failed to build worker");
+        let job = JobBuilder::new("retry")
+            .json_payload(&serde_json::json!(20))
+            .expect("json_payload")
+            .build();
+
+        let start = test.time.now().replace_nanosecond(0).unwrap();
+        let schedule = RecurringJobSchedule::RepeatEvery {
+            interval: Duration::from_secs(400),
+        };
+        test.queue
+            .add_recurring_job("job_id".to_string(), schedule.clone(), job, true)
+            .await
+            .expect("add_recurring_job");
+        let job_status = test
+            .queue
+            .get_recurring_job_info("job_id".to_string())
+            .await
+            .expect("Retrieving job status");
+
+        assert!(job_status.last_run.is_none());
+        let (first_job_id, first_run_at) = job_status.next_run.expect("next_run_at");
+        assert_eq!(job_status.schedule, schedule);
+
+        wait_for_job_status("first run", &test.queue, first_job_id, JobState::Failed).await;
+
+        let job_status = test
+            .queue
+            .get_recurring_job_info("job_id".to_string())
+            .await
+            .expect("Retrieving job status");
+        event!(Level::INFO, ?job_status, "status after first job failed");
+
+        let last_run = job_status.last_run.as_ref().expect("last_run");
+        assert_eq!(last_run.id, first_job_id);
+        assert_eq!(last_run.orig_run_at, first_run_at);
+
+        let (second_job_id, second_run_time) = job_status.next_run.expect("next_run");
+        assert_ne!(
+            first_job_id, second_job_id,
+            "second job must have different id from first job"
+        );
+        assert_eq!(second_run_time, first_run_at + Duration::from_secs(400));
+    }
 
     #[tokio::test]
     #[ignore]
     async fn add_with_bad_schedule() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn update_to_bad_schedule() {}
 
     #[tokio::test]
     #[ignore]
@@ -572,10 +627,6 @@ mod tests {
     /// When a task takes so long that it exceeds the scheduled duration, the next task should run
     /// right away.
     async fn task_longer_than_scheduled_duration() {}
-
-    #[tokio::test]
-    #[ignore]
-    async fn update_to_bad_schedule() {}
 
     #[tokio::test]
     #[ignore]

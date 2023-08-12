@@ -18,7 +18,6 @@ use crate::{
         DbOperation, DbOperationType,
     },
     job_status::RunInfo,
-    recurring::schedule_recurring_jobs,
     shared_state::SharedState,
     worker::{log_error, WorkerId},
     Error, Result, SmartString,
@@ -245,10 +244,17 @@ impl RunningJobData {
             })
             .await
             .map_err(|_| Error::QueueClosed)?;
-        result_rx.await.map_err(|_| Error::QueueClosed)??;
-
-        if let Some(recurring_job) = self.from_recurring_job {
-            schedule_recurring_jobs(&self.queue, self.orig_run_at, &[recurring_job]).await?;
+        let next_time = result_rx.await.map_err(|_| Error::QueueClosed)??;
+        if let Some(next_time) = next_time {
+            log_error(
+                self.queue
+                    .pending_jobs_tx
+                    .send((
+                        SmartString::from(self.job_type.clone()),
+                        next_time.unix_timestamp(),
+                    ))
+                    .await,
+            );
         }
 
         Ok(())

@@ -122,7 +122,7 @@ fn add_new_recurring_job(
     now: OffsetDateTime,
     schedule: RecurringJobSchedule,
     run_immediately_on_insert: bool,
-    job: Job,
+    mut job: Job,
 ) -> Result<AddRecurringJobResult> {
     // Insert the base job
     let mut insert_job_stmt = tx.prepare_cached(INSERT_JOBS_QUERY)?;
@@ -146,7 +146,10 @@ fn add_new_recurring_job(
     } else {
         schedule.find_next_job_time(now)?
     };
-    schedule_next_recurring_job(tx, now, &mut insert_job_stmt, recurring_id, run_at, job)?;
+
+    job.from_recurring = Some(recurring_id);
+    job.run_at = Some(run_at);
+    schedule_next_recurring_job(tx, now, &mut insert_job_stmt, job)?;
 
     Ok(AddRecurringJobResult {
         recurring_job_id: recurring_id,
@@ -159,19 +162,14 @@ pub(super) fn schedule_next_recurring_job(
     tx: &Connection,
     now: OffsetDateTime,
     insert_job_stmt: &mut Statement,
-    recurring_job_id: i64,
-    run_at: OffsetDateTime,
-    mut job: Job,
-) -> Result<OffsetDateTime, Error> {
+    job: Job,
+) -> Result<(), Error> {
     // Finally, add the version of the job that will actually run the first time.
-    job.from_recurring = Some(recurring_job_id);
-    job.run_at = Some(run_at);
-
     let (job_id, _) = execute_add_job_stmt(tx, insert_job_stmt, &job, now, None)?;
     let mut active_insert_stmt = tx.prepare_cached(INSERT_ACTIVE_JOBS_QUERY)?;
     execute_add_active_job_stmt(&mut active_insert_stmt, job_id, &job, now)?;
 
-    Ok(run_at)
+    Ok(())
 }
 
 fn update_existing_recurring_job(

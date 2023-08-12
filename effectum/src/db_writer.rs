@@ -1,4 +1,5 @@
 use rusqlite::Connection;
+use time::OffsetDateTime;
 use tracing::{event, instrument, Level};
 use uuid::Uuid;
 
@@ -69,6 +70,7 @@ enum DbOperationResult {
     AddJob(OperationResult<Uuid>),
     AddMultipleJobs(OperationResult<AddMultipleJobsResult>),
     UpdateJob(OperationResult<String>),
+    CompleteJob(OperationResult<Option<OffsetDateTime>>),
     CancelJob(OperationResult<()>),
     DeleteRecurringJob(OperationResult<()>),
     AddRecurringJob(OperationResult<AddRecurringJobResult>),
@@ -84,6 +86,7 @@ impl DbOperationResult {
             DbOperationResult::AddJob(result) => result.result.is_ok(),
             DbOperationResult::AddMultipleJobs(result) => result.result.is_ok(),
             DbOperationResult::UpdateJob(result) => result.result.is_ok(),
+            DbOperationResult::CompleteJob(result) => result.result.is_ok(),
             DbOperationResult::CancelJob(result) => result.result.is_ok(),
             DbOperationResult::DeleteRecurringJob(result) => result.result.is_ok(),
             DbOperationResult::AddRecurringJob(result) => result.result.is_ok(),
@@ -109,6 +112,9 @@ impl DbOperationResult {
                 result.result_tx.send(result.result).ok();
             }
             DbOperationResult::UpdateJob(result) => {
+                result.result_tx.send(result.result).ok();
+            }
+            DbOperationResult::CompleteJob(result) => {
                 result.result_tx.send(result.result).ok();
             }
             DbOperationResult::CancelJob(result) => {

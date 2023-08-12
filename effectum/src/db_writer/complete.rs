@@ -1,8 +1,11 @@
 use rusqlite::{named_params, params, Connection};
+use time::OffsetDateTime;
 use tokio::sync::oneshot;
 
-use super::DbOperationResult;
-use crate::{job_status::JobState, Error, Result};
+use super::{
+    add_job::INSERT_JOBS_QUERY, recurring::schedule_next_recurring_job, DbOperationResult,
+};
+use crate::{job_status::JobState, recurring::create_job_from_recurring_template, Error, Result};
 
 pub(crate) struct CompleteJobArgs {
     pub job_id: i64,
@@ -10,7 +13,7 @@ pub(crate) struct CompleteJobArgs {
     pub now: i64,
     pub started_at: i64,
     pub success: bool,
-    pub result_tx: oneshot::Sender<Result<()>>,
+    pub result_tx: oneshot::Sender<Result<Option<OffsetDateTime>>>,
 }
 
 pub(super) fn do_complete_job(
@@ -21,7 +24,7 @@ pub(super) fn do_complete_job(
     started_at: i64,
     success: bool,
     this_run_info: String,
-) -> Result<()> {
+) -> Result<Option<OffsetDateTime>> {
     let mut delete_stmt =
         tx.prepare_cached(r##"DELETE FROM active_jobs WHERE job_id=?1 AND active_worker_id=?2"##)?;
 
@@ -38,18 +41,41 @@ pub(super) fn do_complete_job(
             started_at = $started_at,
             finished_at = $now
         WHERE job_id=$job_id
+        RETURNING orig_run_at, from_recurring_job
         "##,
     )?;
 
-    stmt.execute(named_params! {
+    let (orig_run_at, from_recurring) = stmt.query_row(named_params! {
         "$job_id": job_id,
         "$now": now,
         "$started_at": started_at,
         "$this_run_info": this_run_info,
         "$status": if success { JobState::Succeeded.as_str() } else { JobState::Failed.as_str() },
+    }, |row| {
+        let orig_run_at = row.get::<_, i64>(0)?;
+        let from_recurring = row.get::<_, Option<i64>>(1)?;
+        Ok((orig_run_at, from_recurring))
     })?;
 
-    Ok(())
+    let orig_run_at = OffsetDateTime::from_unix_timestamp(orig_run_at)
+        .map_err(|_| Error::TimestampOutOfRange("orig_run_at"))?;
+
+    let next_run_at = if let Some(from_recurring) = from_recurring {
+        let mut insert_job_stmt = tx.prepare_cached(INSERT_JOBS_QUERY)?;
+        let ids = vec![rusqlite::types::Value::from(from_recurring)];
+        let jobs = create_job_from_recurring_template(tx, orig_run_at, ids)?;
+        let job = jobs.into_iter().next().unwrap();
+
+        let now = OffsetDateTime::from_unix_timestamp(now)
+            .map_err(|_| Error::TimestampOutOfRange("now"))?;
+        let run_at = job.run_at;
+        schedule_next_recurring_job(tx, now, &mut insert_job_stmt, job)?;
+        run_at
+    } else {
+        None
+    };
+
+    Ok(next_run_at)
 }
 
 pub(super) fn complete_job(
@@ -67,5 +93,5 @@ pub(super) fn complete_job(
     } = args;
 
     let result = do_complete_job(tx, job_id, worker_id, now, started_at, success, run_info);
-    DbOperationResult::EmptyValue(super::OperationResult { result, result_tx })
+    DbOperationResult::CompleteJob(super::OperationResult { result, result_tx })
 }
