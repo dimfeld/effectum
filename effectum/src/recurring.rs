@@ -3,7 +3,7 @@ use std::{rc::Rc, str::FromStr, time::Duration};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use tracing::Span;
+use tracing::{event, instrument, Level, Span};
 use uuid::Uuid;
 
 use crate::{
@@ -43,6 +43,7 @@ pub(crate) async fn schedule_needed_recurring_jobs_at_startup(
 }
 
 /// Schedule jobs from recurring templates.
+#[instrument(level = "debug", skip(queue))]
 pub(crate) async fn schedule_recurring_jobs(
     queue: &SharedState,
     from_time: OffsetDateTime,
@@ -254,6 +255,7 @@ impl Queue {
             .map_err(|_| Error::QueueClosed)?;
         let add_result = result_rx.await.map_err(|_| Error::QueueClosed)??;
         if let Some(run_at) = add_result.new_run_at {
+            event!(Level::DEBUG, ?run_at, "Setting up job notify");
             self.state.notify_for_job_type(now, run_at, &job_type).await;
         }
 
@@ -361,7 +363,7 @@ mod tests {
 
     use crate::{
         recurring::RecurringJobSchedule,
-        test_util::{wait_for_job, TestEnvironment},
+        test_util::{wait_for, wait_for_job, TestEnvironment},
         JobBuilder,
     };
 
@@ -370,7 +372,7 @@ mod tests {
         let test = TestEnvironment::new().await;
         let _worker = test.worker().build().await.expect("Failed to build worker");
         let job = JobBuilder::new("counter")
-            .json_payload(&serde_json::json!({ "value": 5 }))
+            .json_payload(&serde_json::json!({ "value": 1 }))
             .expect("json_payload")
             .build();
 
@@ -407,6 +409,12 @@ mod tests {
 
         let result = wait_for_job("first run", &test.queue, first_job_id).await;
         assert!(result.started_at.expect("started_at") >= start + Duration::from_secs(10));
+        assert_eq!(
+            test.context
+                .counter
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
 
         let job_status = test
             .queue
@@ -434,11 +442,115 @@ mod tests {
 
         let result = wait_for_job("second run", &test.queue, second_job_id).await;
         assert!(result.started_at.expect("started_at") >= second_run_time);
+
+        assert_eq!(
+            test.context
+                .counter
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
     }
 
     #[tokio::test]
-    #[ignore]
-    async fn run_immediately() {}
+    async fn run_immediately_on_add() {
+        let test = TestEnvironment::new().await;
+        let _worker = test.worker().build().await.expect("Failed to build worker");
+        let job = JobBuilder::new("counter")
+            .json_payload(&serde_json::json!({ "value": 5 }))
+            .expect("json_payload")
+            .build();
+
+        let start = test.time.now().replace_nanosecond(0).unwrap();
+        let schedule = RecurringJobSchedule::RepeatEvery {
+            interval: Duration::from_secs(2),
+        };
+
+        test.queue
+            .add_recurring_job("job_id".to_string(), schedule.clone(), job, true)
+            .await
+            .expect("add_recurring_job");
+
+        wait_for("first run", || async {
+            let val = test
+                .context
+                .counter
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if val == 1 {
+                Ok(())
+            } else {
+                Err("first task did not finish".to_string())
+            }
+        })
+        .await;
+
+        let job_status = test
+            .queue
+            .get_recurring_job_info("job_id".to_string())
+            .await
+            .expect("Retrieving job status");
+        event!(Level::INFO, ?job_status, "status after first job");
+        // Depending on how fast things go, the job may or may not have started once we get here,
+        // so we have to check both next_run and last_run.
+        let (first_job_id, first_run_at) = job_status
+            .last_run
+            .map(|last_run| (last_run.id, last_run.orig_run_at))
+            .expect("retrieving first run info");
+        let first_run_at = first_run_at.replace_nanosecond(0).unwrap();
+        assert_eq!(
+            first_run_at, start,
+            "first invocation should have started right away"
+        );
+        assert_eq!(job_status.schedule, schedule);
+
+        let result = test
+            .queue
+            .get_job_status(first_job_id)
+            .await
+            .expect("checking first job status");
+        assert!(result.started_at.expect("started_at") <= start + Duration::from_secs(1));
+        assert_eq!(
+            test.context
+                .counter
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+
+        let job_status = wait_for("next job to be set up after first run", || async {
+            let job_status = test
+                .queue
+                .get_recurring_job_info("job_id".to_string())
+                .await
+                .expect("Retrieving job status");
+
+            if job_status.next_run.is_none() {
+                Err("next_run not set up yet".to_string())
+            } else {
+                Ok(job_status)
+            }
+        })
+        .await;
+
+        let last_run = job_status.last_run.as_ref().expect("last_run");
+        assert_eq!(last_run.id, first_job_id);
+        assert_eq!(last_run.orig_run_at, first_run_at);
+
+        event!(Level::INFO, ?job_status, "status after first job finished");
+        let (second_job_id, second_run_time) = job_status.next_run.expect("next_run");
+        assert_ne!(
+            first_job_id, second_job_id,
+            "second job must have different id from first job"
+        );
+        assert_eq!(second_run_time, start + Duration::from_secs(2));
+
+        let result = wait_for_job("second run", &test.queue, second_job_id).await;
+        assert!(result.started_at.expect("started_at") >= second_run_time);
+        assert_eq!(
+            test.context
+                .counter
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+    }
 
     #[tokio::test]
     #[ignore]
@@ -447,6 +559,19 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn add_with_bad_schedule() {}
+
+    #[tokio::test]
+    #[ignore]
+    /// Ensure that when the next task is scheduled with an "every X duration" schedule, its next time
+    /// is based on the previously scheduled time, not when the task was actually started or
+    /// finished.
+    async fn next_time_based_on_last_scheduled_time() {}
+
+    #[tokio::test]
+    #[ignore]
+    /// When a task takes so long that it exceeds the scheduled duration, the next task should run
+    /// right away.
+    async fn task_longer_than_scheduled_duration() {}
 
     #[tokio::test]
     #[ignore]

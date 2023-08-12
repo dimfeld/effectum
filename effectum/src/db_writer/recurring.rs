@@ -144,8 +144,9 @@ fn add_new_recurring_job(
     let run_at = if run_immediately_on_insert {
         now
     } else {
-        schedule_next_recurring_job(tx, now, &mut insert_job_stmt, recurring_id, schedule, job)?
+        schedule.find_next_job_time(now)?
     };
+    schedule_next_recurring_job(tx, now, &mut insert_job_stmt, recurring_id, run_at, job)?;
 
     Ok(AddRecurringJobResult {
         recurring_job_id: recurring_id,
@@ -159,11 +160,9 @@ pub(super) fn schedule_next_recurring_job(
     now: OffsetDateTime,
     insert_job_stmt: &mut Statement,
     recurring_job_id: i64,
-    schedule: RecurringJobSchedule,
+    run_at: OffsetDateTime,
     mut job: Job,
 ) -> Result<OffsetDateTime, Error> {
-    let run_at = schedule.find_next_job_time(now)?;
-
     // Finally, add the version of the job that will actually run the first time.
     job.from_recurring = Some(recurring_job_id);
     job.run_at = Some(run_at);

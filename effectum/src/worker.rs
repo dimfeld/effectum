@@ -1,18 +1,29 @@
+use std::{
+    fmt::Debug,
+    sync::{
+        atomic::{AtomicU32, AtomicU64, Ordering},
+        Arc,
+    },
+};
+
 use ahash::HashMap;
-use std::fmt::Debug;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
-use tokio::sync::{oneshot, Notify};
-use tokio::task::JoinHandle;
-use tokio::time::Instant;
+use tokio::{
+    sync::{oneshot, Notify},
+    task::JoinHandle,
+    time::Instant,
+};
 use tracing::{event, instrument, Level, Span};
 
-use crate::db_writer::ready_jobs::{GetReadyJobsArgs, ReadyJob};
-use crate::db_writer::{DbOperation, DbOperationType};
-use crate::job_registry::{JobRegistry, JobRunner};
-use crate::shared_state::{SharedState, Time};
-use crate::worker_list::ListeningWorker;
-use crate::{Error, Queue, Result, SmartString};
+use crate::{
+    db_writer::{
+        ready_jobs::{GetReadyJobsArgs, ReadyJob},
+        DbOperation, DbOperationType,
+    },
+    job_registry::{JobRegistry, JobRunner},
+    shared_state::{SharedState, Time},
+    worker_list::ListeningWorker,
+    Error, Queue, Result, SmartString,
+};
 
 /// The internal ID for a worker.
 pub type WorkerId = u64;
@@ -460,9 +471,8 @@ async fn wait_for_next_autoheartbeat(time: &Time, expires: i64, heartbeat_increm
 
 #[cfg(test)]
 mod tests {
-    use crate::test_util::TestEnvironment;
-
     use super::*;
+    use crate::test_util::TestEnvironment;
 
     #[tokio::test]
     #[should_panic]

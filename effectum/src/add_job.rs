@@ -340,6 +340,7 @@ impl SharedState {
     }
 
     /// Submit multiple jobs to the queue
+    #[instrument(skip(self))]
     pub async fn add_jobs(&self, jobs: Vec<Job>) -> Result<Vec<Uuid>> {
         let mut ready_job_types: HashSet<String> = HashSet::default();
         let mut pending_job_types: HashMap<String, i64> = HashMap::default();
