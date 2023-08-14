@@ -296,11 +296,14 @@ impl Queue {
                 FROM recurring
                 WHERE external_id = ?"##,
                 )?;
-                let (base_job_id, schedule) = base_info_stmt.query_row(params![id], |row| {
-                    let base_job_id = row.get(0)?;
-                    let schedule = row.get::<_, String>(1)?;
-                    Ok((base_job_id, schedule))
-                })?;
+                let (base_job_id, schedule) = base_info_stmt
+                    .query_row(params![id], |row| {
+                        let base_job_id = row.get(0)?;
+                        let schedule = row.get::<_, String>(1)?;
+                        Ok((base_job_id, schedule))
+                    })
+                    .optional()?
+                    .ok_or(Error::NotFound)?;
 
                 let schedule: RecurringJobSchedule =
                     serde_json::from_str(&schedule).map_err(|_| Error::InvalidSchedule)?;
@@ -370,7 +373,7 @@ mod tests {
     use crate::{
         recurring::RecurringJobSchedule,
         test_util::{wait_for, wait_for_job, wait_for_job_status, TestEnvironment},
-        JobBuilder, JobState,
+        Error, JobBuilder, JobState,
     };
 
     #[tokio::test(start_paused = true)]
@@ -568,7 +571,6 @@ mod tests {
             .expect("json_payload")
             .build();
 
-        let start = test.time.now().replace_nanosecond(0).unwrap();
         let schedule = RecurringJobSchedule::RepeatEvery {
             interval: Duration::from_secs(400),
         };
@@ -657,6 +659,14 @@ mod tests {
     async fn delete_recurring() {}
 
     #[tokio::test]
-    #[ignore]
-    async fn job_status_on_nonexistent_job() {}
+    async fn job_status_on_nonexistent_job() {
+        let test = TestEnvironment::new().await;
+        let err = test
+            .queue
+            .get_recurring_job_info("job_id".to_string())
+            .await
+            .unwrap_err();
+        println!("err: {err:?}");
+        assert!(matches!(err, Error::NotFound));
+    }
 }
