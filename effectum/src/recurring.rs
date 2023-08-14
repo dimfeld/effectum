@@ -610,12 +610,53 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
-    async fn add_with_bad_schedule() {}
+    async fn add_with_bad_schedule() {
+        let test = TestEnvironment::new().await;
+        let _worker = test.worker().build().await.expect("Failed to build worker");
+        let job = JobBuilder::new("counter")
+            .json_payload(&serde_json::json!({ "value": 5 }))
+            .expect("json_payload")
+            .build();
+        let schedule = RecurringJobSchedule::Cron {
+            spec: "2 1".to_string(),
+        };
+
+        let err = test
+            .queue
+            .add_recurring_job("job_id".to_string(), schedule, job, false)
+            .await
+            .expect_err("add_recurring_job");
+        println!("{err:?}");
+    }
 
     #[tokio::test]
-    #[ignore]
-    async fn update_to_bad_schedule() {}
+    async fn update_to_bad_schedule() {
+        let test = TestEnvironment::new().await;
+        let _worker = test.worker().build().await.expect("Failed to build worker");
+        let job = JobBuilder::new("counter")
+            .json_payload(&serde_json::json!({ "value": 5 }))
+            .expect("json_payload")
+            .build();
+        let schedule = RecurringJobSchedule::Cron {
+            spec: "* * * * * 5".to_string(),
+        };
+
+        test.queue
+            .add_recurring_job("job_id".to_string(), schedule, job.clone(), false)
+            .await
+            .expect("add_recurring_job");
+
+        let bad_schedule = RecurringJobSchedule::Cron {
+            spec: "* * * 5".to_string(),
+        };
+        let err = test
+            .queue
+            .update_recurring_job("job_id".to_string(), bad_schedule, job.clone())
+            .await
+            .expect_err("add_recurring_job");
+
+        assert!(matches!(err, Error::InvalidSchedule));
+    }
 
     #[tokio::test]
     #[ignore]
@@ -631,32 +672,90 @@ mod tests {
     async fn task_longer_than_scheduled_duration() {}
 
     #[tokio::test]
-    #[ignore]
-    async fn update_nonexisting_error() {}
+    async fn add_already_existing_error() {
+        let test = TestEnvironment::new().await;
+        let _worker = test.worker().build().await.expect("Failed to build worker");
+        let job = JobBuilder::new("counter")
+            .json_payload(&serde_json::json!({ "value": 1 }))
+            .expect("json_payload")
+            .build();
+
+        let schedule = RecurringJobSchedule::RepeatEvery {
+            interval: Duration::from_secs(10),
+        };
+        test.queue
+            .add_recurring_job("job_id".to_string(), schedule.clone(), job.clone(), false)
+            .await
+            .expect("add_recurring_job");
+
+        let err = test
+            .queue
+            .add_recurring_job("job_id".to_string(), schedule.clone(), job, false)
+            .await
+            .expect_err("second add_recurring_job");
+        assert!(matches!(err, Error::RecurringJobAlreadyExists(_)));
+    }
+
+    #[tokio::test]
+    async fn update_nonexistent_error() {
+        let test = TestEnvironment::new().await;
+        let _worker = test.worker().build().await.expect("Failed to build worker");
+        let job = JobBuilder::new("counter")
+            .json_payload(&serde_json::json!({ "value": 1 }))
+            .expect("json_payload")
+            .build();
+
+        let schedule = RecurringJobSchedule::RepeatEvery {
+            interval: Duration::from_secs(10),
+        };
+        let err = test
+            .queue
+            .update_recurring_job("job_id".to_string(), schedule, job)
+            .await
+            .expect_err("update_recurring_job");
+
+        assert!(matches!(err, Error::NotFound));
+    }
 
     #[tokio::test]
     #[ignore]
-    async fn add_already_existing_error() {}
+    async fn update_same_schedule() {}
 
     #[tokio::test]
     #[ignore]
-    async fn update_recurring_same_schedule() {}
+    async fn update_to_earlier() {}
 
     #[tokio::test]
     #[ignore]
-    async fn update_recurring_to_earlier() {}
+    async fn update_to_later() {}
 
     #[tokio::test]
     #[ignore]
-    async fn update_recurring_to_later() {}
+    async fn upsert_new_job() {}
 
     #[tokio::test]
     #[ignore]
-    async fn upsert_recurring() {}
+    async fn upsert_existing_job() {}
 
     #[tokio::test]
     #[ignore]
-    async fn delete_recurring() {}
+    async fn upsert_no_changes() {}
+
+    #[tokio::test]
+    #[ignore]
+    async fn delete() {}
+
+    #[tokio::test]
+    async fn delete_nonexistent() {
+        let test = TestEnvironment::new().await;
+        let err = test
+            .queue
+            .delete_recurring_job("job_id".to_string())
+            .await
+            .unwrap_err();
+        println!("err: {err:?}");
+        assert!(matches!(err, Error::NotFound));
+    }
 
     #[tokio::test]
     async fn job_status_on_nonexistent_job() {
