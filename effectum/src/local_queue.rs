@@ -1066,11 +1066,5 @@ mod tests {
         async fn clear_jobs() {
             unimplemented!();
         }
-
-        #[tokio::test]
-        #[ignore = "not implemented yet"]
-        async fn recurring_jobs() {
-            unimplemented!();
-        }
     }
 }

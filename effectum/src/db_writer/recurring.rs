@@ -3,6 +3,7 @@ use std::rc::Rc;
 use rusqlite::{params, Connection, OptionalExtension, Statement};
 use time::OffsetDateTime;
 use tokio::sync::oneshot;
+use tracing::{event, Level};
 
 use super::{
     add_job::{execute_add_active_job_stmt, INSERT_ACTIVE_JOBS_QUERY},
@@ -126,8 +127,13 @@ fn add_new_recurring_job(
 ) -> Result<AddRecurringJobResult> {
     // Insert the base job
     let mut insert_job_stmt = tx.prepare_cached(INSERT_JOBS_QUERY)?;
-    let (base_job_id, _) =
-        execute_add_job_stmt(tx, &mut insert_job_stmt, &job, now, Some("recurring_base"))?;
+    let (base_job_id, _) = execute_add_job_stmt(
+        tx,
+        &mut insert_job_stmt,
+        &job,
+        now,
+        Some(crate::JobState::RecurringBase),
+    )?;
 
     // Then add the recurring template
     let schedule_str = serde_json::to_string(&schedule).map_err(|_| Error::InvalidSchedule)?;
@@ -147,7 +153,7 @@ fn add_new_recurring_job(
         schedule.find_next_job_time(now)?
     };
 
-    job.from_recurring = Some(recurring_id);
+    job.from_recurring = Some(base_job_id);
     job.run_at = Some(run_at);
     schedule_next_recurring_job(tx, now, &mut insert_job_stmt, job)?;
 
@@ -232,7 +238,7 @@ fn update_existing_recurring_job(
     let mut pending_job_update_stmt = tx.prepare_cached(
         r##"UPDATE jobs
         SET
-            orig_run_at = COALESCE(?, orig_run_at),
+            orig_run_at = COALESCE(?, jobs.orig_run_at),
             job_type = ?,
             priority = ?,
             weight = ?,
@@ -243,13 +249,14 @@ fn update_existing_recurring_job(
             backoff_initial_interval = ?,
             default_timeout = ?,
             heartbeat_increment = ?
-        WHERE from_recurring = ? AND status = 'pending'
+        WHERE from_recurring_job = ? AND status = 'pending'
         RETURNING job_id"##,
     )?;
+    let next_timestamp = next_time.map(|t| t.unix_timestamp());
     let updated_jobs = pending_job_update_stmt
         .query_map(
             params![
-                next_time,
+                next_timestamp,
                 job.job_type,
                 job.priority,
                 job.weight,
@@ -260,12 +267,13 @@ fn update_existing_recurring_job(
                 job.retries.backoff_initial_interval.as_secs(),
                 job.timeout.as_secs(),
                 job.heartbeat_increment.as_secs(),
-                recurring_job_id,
+                base_job_id,
             ],
             |row| row.get::<_, rusqlite::types::Value>(0),
         )?
         .collect::<Result<Vec<_>, _>>()?;
 
+    event!(Level::DEBUG, ?next_time, id=?updated_jobs, %base_job_id, %recurring_job_id, "Updating recurring job");
     // Update the active job entry for any pending jobs
     if !updated_jobs.is_empty() {
         let mut active_job_update_stmt = tx.prepare_cached(
@@ -276,7 +284,11 @@ fn update_existing_recurring_job(
             WHERE job_id in rarray(?) AND active_worker_id IS NULL"##,
         )?;
 
-        active_job_update_stmt.execute(params![job.priority, next_time, Rc::new(updated_jobs)])?;
+        active_job_update_stmt.execute(params![
+            job.priority,
+            next_timestamp,
+            Rc::new(updated_jobs)
+        ])?;
     }
 
     Ok(AddRecurringJobResult {

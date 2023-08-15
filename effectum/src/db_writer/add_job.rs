@@ -4,7 +4,7 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use super::DbOperationResult;
-use crate::{Job, Result};
+use crate::{Job, JobState, Result};
 
 pub(crate) struct AddJobArgs {
     pub job: Job,
@@ -45,7 +45,7 @@ pub(super) fn execute_add_job_stmt(
     jobs_stmt: &mut Statement,
     job_config: &Job,
     now: OffsetDateTime,
-    status: Option<&str>,
+    status: Option<JobState>,
 ) -> Result<(i64, Uuid)> {
     let external_id: Uuid = ulid::Ulid::new().into();
     let run_time = job_config.run_at.unwrap_or(now).unix_timestamp();
@@ -56,7 +56,7 @@ pub(super) fn execute_add_job_stmt(
         "$priority": job_config.priority,
         "$weight": job_config.weight,
         "$from_recurring_job": job_config.from_recurring,
-        "$status": status.unwrap_or("active"),
+        "$status": status.unwrap_or(JobState::Pending).as_str(),
         "$run_at": run_time,
         "$payload": job_config.payload.as_slice(),
         "$max_retries": job_config.retries.max_retries,
