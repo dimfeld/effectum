@@ -57,17 +57,17 @@ pub(super) fn do_complete_job(
         Ok((orig_run_at, from_recurring))
     })?;
 
-    let orig_run_at = OffsetDateTime::from_unix_timestamp(orig_run_at)
-        .map_err(|_| Error::TimestampOutOfRange("orig_run_at"))?;
-
     let next_run_at = if let Some(from_recurring) = from_recurring {
-        let mut insert_job_stmt = tx.prepare_cached(INSERT_JOBS_QUERY)?;
-        let ids = vec![rusqlite::types::Value::from(from_recurring)];
-        let jobs = create_job_from_recurring_template(tx, orig_run_at, ids)?;
-        let job = jobs.into_iter().next().unwrap();
-
+        let orig_run_at = OffsetDateTime::from_unix_timestamp(orig_run_at)
+            .map_err(|_| Error::TimestampOutOfRange("orig_run_at"))?;
         let now = OffsetDateTime::from_unix_timestamp(now)
             .map_err(|_| Error::TimestampOutOfRange("now"))?;
+
+        let mut insert_job_stmt = tx.prepare_cached(INSERT_JOBS_QUERY)?;
+        let ids = vec![rusqlite::types::Value::from(from_recurring)];
+        let jobs = create_job_from_recurring_template(tx, now, orig_run_at, ids)?;
+        let job = jobs.into_iter().next().unwrap();
+
         let run_at = job.run_at;
         schedule_next_recurring_job(tx, now, &mut insert_job_stmt, job)?;
         run_at

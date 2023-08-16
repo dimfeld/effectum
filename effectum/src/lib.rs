@@ -88,6 +88,7 @@ pub use job::{RunningJob, RunningJobData};
 pub use job_registry::{JobRegistry, JobRunner, JobRunnerBuilder};
 pub use job_status::{JobState, JobStatus, RunInfo};
 pub use local_queue::*;
+pub use recurring::{RecurringJobInfo, RecurringJobSchedule};
 pub use worker::{Worker, WorkerBuilder};
 
 pub(crate) type SmartString = smartstring::SmartString<smartstring::LazyCompact>;

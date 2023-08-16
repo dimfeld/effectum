@@ -10,4 +10,4 @@ Cargo.lock
 **/*.rs.bk
 .cargo/config.toml
 
-prefect-examples.db
+effectum-examples.db*

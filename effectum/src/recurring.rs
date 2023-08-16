@@ -44,6 +44,7 @@ pub(crate) async fn schedule_needed_recurring_jobs_at_startup(
 
 pub(crate) fn create_job_from_recurring_template(
     db: &rusqlite::Connection,
+    now: OffsetDateTime,
     from_time: OffsetDateTime,
     ids: Vec<rusqlite::types::Value>,
 ) -> Result<Vec<Job>, Error> {
@@ -96,7 +97,7 @@ pub(crate) fn create_job_from_recurring_template(
                         .map_err(|_| Error::InvalidSchedule)
                 })?;
 
-            let next_job_time = schedule.find_next_job_time(from_time)?;
+            let next_job_time = schedule.find_next_job_time(now, from_time)?;
             let job = JobBuilder::new(job_type)
                 .priority(priority)
                 .weight(weight)
@@ -130,8 +131,9 @@ pub(crate) async fn schedule_recurring_jobs(
         .iter()
         .map(|id| rusqlite::types::Value::from(*id))
         .collect::<Vec<_>>();
+    let now = queue.time.now();
     let jobs = conn
-        .interact(move |db| create_job_from_recurring_template(db, from_time, ids))
+        .interact(move |db| create_job_from_recurring_template(db, now, from_time, ids))
         .await??;
 
     queue.add_jobs(jobs).await?;
@@ -141,14 +143,26 @@ pub(crate) async fn schedule_recurring_jobs(
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename = "snake_case")]
+/// The schedule definition for a recurring job.
 pub enum RecurringJobSchedule {
-    Cron { spec: String },
-    RepeatEvery { interval: Duration },
+    /// A schedule based on a cron-style schedule string.
+    Cron {
+        /// The cron string
+        spec: String,
+    },
+    /// Repeat the job on this interval.
+    RepeatEvery {
+        /// The interval
+        interval: Duration,
+    },
 }
 
 #[derive(Debug)]
+/// Information about a recurring job.
 pub struct RecurringJobInfo {
+    /// The template that new instances of the recurring job are based on.
     pub base_job: JobStatus,
+    /// The schedule for the recurring job.
     pub schedule: RecurringJobSchedule,
     /// The status of the last (or current) run.
     pub last_run: Option<JobStatus>,
@@ -157,6 +171,7 @@ pub struct RecurringJobInfo {
 }
 
 impl RecurringJobSchedule {
+    /// Create a RecurringJobSchedule from a cron-style schedule string.
     pub fn from_cron_string(spec: String) -> Result<Self, Error> {
         // Make sure it parses ok.
         cron::Schedule::from_str(&spec).map_err(|_| Error::InvalidSchedule)?;
@@ -165,23 +180,45 @@ impl RecurringJobSchedule {
 
     pub(crate) fn find_next_job_time(
         &self,
+        now: OffsetDateTime,
         after: OffsetDateTime,
     ) -> Result<OffsetDateTime, Error> {
         match self {
             RecurringJobSchedule::Cron { spec } => {
                 let sched = cron::Schedule::from_str(spec).map_err(|_| Error::InvalidSchedule)?;
+                let now = chrono::DateTime::<chrono::Utc>::from_utc(
+                    chrono::NaiveDateTime::from_timestamp_opt(now.unix_timestamp(), 0)
+                        .ok_or(Error::TimestampOutOfRange("now"))?,
+                    chrono::Utc,
+                );
                 let after = chrono::DateTime::<chrono::Utc>::from_utc(
                     chrono::NaiveDateTime::from_timestamp_opt(after.unix_timestamp(), 0)
                         .ok_or(Error::TimestampOutOfRange("after"))?,
                     chrono::Utc,
                 );
-                let next = sched.after(&after).next().ok_or(Error::InvalidSchedule)?;
+
+                let mut schedule_iter = sched.after(&after);
+                let mut next = schedule_iter.next().ok_or(Error::InvalidSchedule)?;
+
+                while next < now {
+                    // Walk the time up to the nearest time that is still before now. This ensures
+                    // that the timer catches up without running a bunch of jobs, when it's way
+                    // behind due to the server being shut down.
+                    next = schedule_iter.next().ok_or(Error::InvalidSchedule)?;
+                }
+
                 // The `cron` package uses chrono but everything else here uses `time`, so convert.
                 let next = OffsetDateTime::from_unix_timestamp(next.timestamp())
                     .map_err(|_| Error::InvalidSchedule)?;
                 Ok(next)
             }
-            RecurringJobSchedule::RepeatEvery { interval } => Ok(after + *interval),
+            RecurringJobSchedule::RepeatEvery { interval } => {
+                let mut result = after + *interval;
+                while result < now {
+                    result += *interval;
+                }
+                Ok(result)
+            }
         }
     }
 }

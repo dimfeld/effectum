@@ -150,7 +150,7 @@ fn add_new_recurring_job(
     let run_at = if run_immediately_on_insert {
         now
     } else {
-        schedule.find_next_job_time(now)?
+        schedule.find_next_job_time(now, now)?
     };
 
     job.from_recurring = Some(base_job_id);
@@ -196,7 +196,7 @@ fn update_existing_recurring_job(
             schedule = ?1 WHERE recurring_job_id = ?2"##,
         )?;
         recurring_job_stmt.execute(params![schedule, recurring_job_id])?;
-        Some(new_schedule.find_next_job_time(now)?)
+        Some(new_schedule.find_next_job_time(now, now)?)
     } else {
         // No new time since the schedule did not change. We have to be careful to not reset the
         // next job time if the schedule did not change, since we could inadvertently skip a job if
