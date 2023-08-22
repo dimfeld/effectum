@@ -1245,6 +1245,9 @@ mod tests {
         event!(Level::INFO, %next_run_at);
         wait_for_job("first run after restart", &test.queue, next_job_id).await;
 
+        // Wait a little more just to make sure that we aren't double-running the task.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
         assert_eq!(
             test.context
                 .counter

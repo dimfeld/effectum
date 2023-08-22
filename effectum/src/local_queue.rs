@@ -643,7 +643,6 @@ mod tests {
         assert_eq!(status.run_info[2].info.to_string(), "\"Job expired\"");
     }
 
-    // TODO Run this in virtual time once https://github.com/tokio-rs/tokio/pull/5115 is merged.
     #[tokio::test()]
     async fn manual_heartbeat() {
         let mut test = TestEnvironment::new().await;
@@ -671,7 +670,6 @@ mod tests {
         wait_for_job("job to succeed", &test.queue, job_id).await;
     }
 
-    // TODO Run this in virtual time once https://github.com/tokio-rs/tokio/pull/5115 is merged.
     #[tokio::test]
     async fn auto_heartbeat() {
         let mut test = TestEnvironment::new().await;
