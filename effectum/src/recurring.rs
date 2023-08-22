@@ -15,33 +15,6 @@ use crate::{
     Error, Job, JobBuilder, JobStatus, Queue,
 };
 
-pub(crate) async fn schedule_needed_recurring_jobs_at_startup(
-    queue: &SharedState,
-) -> Result<(), Error> {
-    let conn = queue.read_conn_pool.get().await?;
-
-    let needed_jobs = conn
-        .interact(move |db| {
-            let query = r##"SELECT base_job_id
-                FROM recurring
-                JOIN jobs on recurring.base_job_id = jobs.job_id
-                LEFT JOIN active_jobs ON active_jobs.job_id = jobs.job_id
-                WHERE active_jobs.job_id IS NULL"##;
-            let mut stmt = db.prepare(query)?;
-            let rows = stmt
-                .query_map([], |row| row.get(0))?
-                .collect::<Result<Vec<i64>, _>>()?;
-
-            Ok::<_, Error>(rows)
-        })
-        .await??;
-    drop(conn);
-
-    schedule_recurring_jobs(queue, OffsetDateTime::now_utc(), &needed_jobs).await?;
-
-    Ok(())
-}
-
 pub(crate) fn create_job_from_recurring_template(
     db: &rusqlite::Connection,
     now: OffsetDateTime,
@@ -1207,5 +1180,76 @@ mod tests {
             .unwrap_err();
         println!("err: {err:?}");
         assert!(matches!(err, Error::NotFound));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn restart() {
+        let test = TestEnvironment::new().await;
+        let _worker = test.worker().build().await.expect("Failed to build worker");
+        let job = JobBuilder::new("counter")
+            .json_payload(&serde_json::json!(1))
+            .expect("json_payload")
+            .build();
+
+        let schedule = RecurringJobSchedule::RepeatEvery {
+            interval: Duration::from_secs(10),
+        };
+        test.queue
+            .add_recurring_job("job_id".to_string(), schedule.clone(), job, false)
+            .await
+            .expect("add_recurring_job");
+
+        let job_status = test
+            .queue
+            .get_recurring_job_info("job_id".to_string())
+            .await
+            .expect("Retrieving job status");
+        let (first_job_id, first_run_at) = job_status.next_run.expect("next_run_at");
+        wait_for_job("first run", &test.queue, first_job_id).await;
+
+        assert_eq!(
+            test.context
+                .counter
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+
+        let next_job_status = test
+            .queue
+            .get_recurring_job_info("job_id".to_string())
+            .await
+            .expect("Retrieving job status");
+        let second_run_at = next_job_status.next_run.expect("next_run_at").1;
+        let dir = test.queue.close_and_persist().await;
+        event!(Level::INFO, "Closed Queue");
+
+        // Wait a while with the queue closed.
+        let after_two_runs = second_run_at + Duration::from_secs(11);
+        tokio::time::sleep_until(
+            test.time
+                .instant_for_timestamp(after_two_runs.unix_timestamp()),
+        )
+        .await;
+
+        // Restart the queue again.
+        event!(Level::INFO, "Restarting queue");
+        let test = TestEnvironment::from_path(dir).await;
+        let _worker = test.worker().build().await.expect("Failed to build worker");
+
+        let job_status = test
+            .queue
+            .get_recurring_job_info("job_id".to_string())
+            .await
+            .expect("Retrieving job status");
+        let (next_job_id, next_run_at) = job_status.next_run.expect("next_run_at");
+        event!(Level::INFO, %next_run_at);
+        wait_for_job("first run after restart", &test.queue, next_job_id).await;
+
+        assert_eq!(
+            test.context
+                .counter
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 }

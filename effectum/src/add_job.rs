@@ -462,6 +462,7 @@ impl Queue {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
+    use temp_dir::TempDir;
     use ulid::Ulid;
 
     use crate::{
@@ -474,7 +475,8 @@ mod tests {
 
     #[tokio::test]
     async fn add_job() {
-        let queue = create_test_queue().await;
+        let dir = TempDir::new().unwrap();
+        let queue = create_test_queue(dir).await;
 
         let job = Job::builder("a_job").priority(1).build();
 
@@ -490,7 +492,8 @@ mod tests {
 
     #[tokio::test]
     async fn add_job_at_time() {
-        let queue = create_test_queue().await;
+        let dir = TempDir::new().unwrap();
+        let queue = create_test_queue(dir).await;
 
         let job_time = (queue.state.time.now() + time::Duration::minutes(10))
             .replace_nanosecond(0)

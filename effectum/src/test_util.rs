@@ -87,9 +87,22 @@ impl Deref for TestQueue {
     }
 }
 
-pub async fn create_test_queue() -> TestQueue {
-    let dir = temp_dir::TempDir::new().unwrap();
-    let path = dir.child("test.sqlite");
+impl TestQueue {
+    pub async fn close_and_persist(self) -> TempDir {
+        self.queue
+            .close(Duration::from_secs(1))
+            .await
+            .expect("closing queue");
+        self.dir
+    }
+}
+
+pub fn queue_db_path(dir: &TempDir) -> PathBuf {
+    dir.child("test.sqlite")
+}
+
+pub async fn create_test_queue(dir: TempDir) -> TestQueue {
+    let path = queue_db_path(&dir);
     let queue = crate::Queue::new(&path).await.unwrap();
 
     TestQueue { queue, path, dir }
@@ -172,8 +185,13 @@ pub(crate) struct TestEnvironment {
 
 impl TestEnvironment {
     pub async fn new() -> Self {
+        let dir = TempDir::new().unwrap();
+        Self::from_path(dir).await
+    }
+
+    pub async fn from_path(dir: TempDir) -> Self {
         Lazy::force(&TRACING);
-        let queue = create_test_queue().await;
+        let queue = create_test_queue(dir).await;
 
         let registry = JobRegistry::new(job_list());
 
