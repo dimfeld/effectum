@@ -5,11 +5,12 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicI64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
 
+use ahash::HashMap;
 use effectum::{Job, JobRunner, Queue, RecurringJobSchedule, RunningJob};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -19,6 +20,7 @@ use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 #[derive(Debug)]
 struct JobContext {
     start: OffsetDateTime,
+    job_times: Mutex<HashMap<String, Vec<i64>>>,
 }
 
 async fn print_message_job(job: RunningJob, context: Arc<JobContext>) -> Result<(), eyre::Report> {
@@ -28,6 +30,15 @@ async fn print_message_job(job: RunningJob, context: Arc<JobContext>) -> Result<
         "Running job: {message} after {}s",
         seconds.as_seconds_f32().round()
     );
+
+    context
+        .job_times
+        .lock()
+        .unwrap()
+        .entry(message)
+        .or_default()
+        .push(seconds.as_seconds_f32() as i64);
+
     Ok(())
 }
 
@@ -51,9 +62,10 @@ pub async fn main() -> Result<(), eyre::Report> {
 
     let context = Arc::new(JobContext {
         start: OffsetDateTime::now_utc(),
+        job_times: Mutex::new(HashMap::default()),
     });
 
-    let _worker = effectum::Worker::builder(&queue, context)
+    let worker = effectum::Worker::builder(&queue, context.clone())
         .jobs(vec![JobRunner::builder(
             PRINT_MESSAGE_JOB,
             print_message_job,
@@ -64,10 +76,11 @@ pub async fn main() -> Result<(), eyre::Report> {
         .build()
         .await?;
 
-    for time in [2, 3, 5] {
+    let times = [2, 3, 5];
+    for time in &times {
         let job_name = format!("job_{time}");
         let schedule = RecurringJobSchedule::RepeatEvery {
-            interval: Duration::from_secs(time),
+            interval: Duration::from_secs(*time),
         };
 
         let job = Job::builder(PRINT_MESSAGE_JOB)
@@ -80,6 +93,14 @@ pub async fn main() -> Result<(), eyre::Report> {
 
     // Wait for the jobs to run.
     tokio::time::sleep(Duration::from_secs(15)).await;
+
+    drop(worker);
+
+    for time in &times {
+        let key = format!("job_{time}");
+        let times = context.job_times.lock().unwrap().remove(&key).unwrap();
+        println!("{key} ran at: {times:?}");
+    }
 
     Ok(())
 }
