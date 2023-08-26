@@ -1,3 +1,7 @@
+# 0.2.0
+
+- Support recurring jobs using cron strings or simple "every N" schedules.
+
 # 0.1.5
 
 - Support updating and cancelling jobs that have been submitted, but have not yet run.

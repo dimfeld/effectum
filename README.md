@@ -69,13 +69,9 @@ async fn main() -> Result<(), Error> {
 
 [Full Development Notes](https://imfeld.dev/notes/projects_effectum)
 
-# Changelog
+# Roadmap
 
-## 0.2
-
-- Support for recurring jobs
-
-## 0.1
+## Released
 
 - Multiple job types
 - Jobs can be added with higher priority to "skip the line"
@@ -85,8 +81,7 @@ async fn main() -> Result<(), Error> {
 - Checkpoints to allow smart resumption of a job if it fails midway through.
 - Immediately schedule a retry for jobs that were running when the process restarts unexpectedly
 - Cancel or modify pending jobs
-
-# Roadmap
+- Support for recurring jobs
 
 ## Soon
 
