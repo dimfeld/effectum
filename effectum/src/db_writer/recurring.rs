@@ -249,7 +249,7 @@ fn update_existing_recurring_job(
             backoff_initial_interval = ?,
             default_timeout = ?,
             heartbeat_increment = ?
-        WHERE from_recurring_job = ? AND status = 'pending'
+        WHERE from_base_job = ? AND status = 'pending'
         RETURNING job_id"##,
     )?;
     let next_timestamp = next_time.map(|t| t.unix_timestamp());
@@ -318,7 +318,7 @@ fn do_delete_recurring_job(tx: &Connection, id: String) -> Result<()> {
 
     // Remove all the pending jobs that referenced this one.
     let mut remove_jobs_stmt = tx.prepare_cached(
-        "DELETE FROM jobs WHERE from_recurring_job = ? AND status = 'pending' RETURNING job_id",
+        "DELETE FROM jobs WHERE from_base_job = ? AND status = 'pending' RETURNING job_id",
     )?;
     let job_ids = remove_jobs_stmt
         .query_map([base_job_id], |row| row.get::<_, rusqlite::types::Value>(0))?

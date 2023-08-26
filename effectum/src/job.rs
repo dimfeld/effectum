@@ -75,7 +75,6 @@ pub struct RunningJobData {
 
     pub(crate) done: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
     pub(crate) queue: SharedState,
-    pub(crate) from_recurring_job: Option<i64>,
     pub(crate) orig_run_at: OffsetDateTime,
 }
 
@@ -97,7 +96,6 @@ impl Debug for RunningJobData {
             .field("backoff_initial_interval", &self.backoff_initial_interval)
             .field("current_try", &self.current_try)
             .field("max_retries", &self.max_retries)
-            .field("from_recurring_job", &self.from_recurring_job)
             .field("orig_run_at", &self.orig_run_at)
             .finish_non_exhaustive()
     }

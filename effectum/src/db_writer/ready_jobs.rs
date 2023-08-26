@@ -51,7 +51,6 @@ fn do_get_ready_jobs(
                 backoff_randomization,
                 backoff_initial_interval,
                 max_retries,
-                from_recurring_job,
                 orig_run_at
             FROM active_jobs
             JOIN jobs USING(job_id)
@@ -78,7 +77,6 @@ fn do_get_ready_jobs(
         backoff_randomization: f64,
         backoff_initial_interval: i32,
         max_retries: i32,
-        from_recurring_job: Option<i64>,
         orig_run_at: i64,
     }
 
@@ -104,8 +102,7 @@ fn do_get_ready_jobs(
             let backoff_randomization: f64 = row.get(10)?;
             let backoff_initial_interval: i32 = row.get(11)?;
             let max_retries: i32 = row.get(12)?;
-            let from_recurring_job: Option<i64> = row.get(13)?;
-            let orig_run_at: i64 = row.get(14)?;
+            let orig_run_at: i64 = row.get(13)?;
 
             Ok(JobResult {
                 job_id,
@@ -121,7 +118,6 @@ fn do_get_ready_jobs(
                 backoff_randomization,
                 backoff_initial_interval,
                 max_retries,
-                from_recurring_job,
                 orig_run_at,
             })
         },
@@ -179,7 +175,6 @@ fn do_get_ready_jobs(
             done: Mutex::new(Some(done_tx)),
             queue: queue.clone(),
             expires: AtomicI64::new(expiration),
-            from_recurring_job: job.from_recurring_job,
             orig_run_at: OffsetDateTime::from_unix_timestamp(job.orig_run_at)
                 .map_err(|_| Error::TimestampOutOfRange("orig_run_at"))?,
         }));

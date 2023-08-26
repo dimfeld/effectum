@@ -324,7 +324,7 @@ impl Queue {
                 let mut find_last_run_stmt = db.prepare_cached(
                     r##"SELECT job_id
                     FROM jobs
-                    WHERE from_recurring_job = ? AND started_at IS NOT NULL
+                    WHERE from_base_job = ? AND started_at IS NOT NULL
                     ORDER BY started_at DESC
                     LIMIT 1"##,
                 )?;
@@ -345,7 +345,7 @@ impl Queue {
                 let mut next_run_stmt = db.prepare_cached(
                     r##"SELECT external_id, orig_run_at
                     FROM jobs
-                    WHERE from_recurring_job = ? AND started_at IS NULL
+                    WHERE from_base_job = ? AND started_at IS NULL
                     LIMIT 1"##,
                 )?;
 

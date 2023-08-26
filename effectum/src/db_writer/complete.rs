@@ -41,7 +41,7 @@ pub(super) fn do_complete_job(
             started_at = $started_at,
             finished_at = $now
         WHERE job_id=$job_id
-        RETURNING orig_run_at, from_recurring_job
+        RETURNING orig_run_at, from_base_job
         "##,
     )?;
 

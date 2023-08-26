@@ -24,11 +24,11 @@ pub(crate) struct AddMultipleJobsArgs {
 
 pub(super) const INSERT_JOBS_QUERY: &str = r##"
     INSERT INTO jobs
-    (external_id, job_type, status, priority, weight, from_recurring_job, orig_run_at, payload,
+    (external_id, job_type, status, priority, weight, from_base_job, orig_run_at, payload,
         max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
         added_at, default_timeout, heartbeat_increment, run_info)
     VALUES
-    ($external_id, $job_type, $status, $priority, $weight, $from_recurring_job, $run_at, $payload,
+    ($external_id, $job_type, $status, $priority, $weight, $from_base_job, $run_at, $payload,
         $max_retries, $backoff_multiplier, $backoff_randomization, $backoff_initial_interval,
         $added_at, $default_timeout, $heartbeat_increment, '[]')
 "##;
@@ -55,7 +55,7 @@ pub(super) fn execute_add_job_stmt(
         "$job_type": job_config.job_type,
         "$priority": job_config.priority,
         "$weight": job_config.weight,
-        "$from_recurring_job": job_config.from_recurring,
+        "$from_base_job": job_config.from_recurring,
         "$status": status.unwrap_or(JobState::Pending).as_str(),
         "$run_at": run_time,
         "$payload": job_config.payload.as_slice(),
