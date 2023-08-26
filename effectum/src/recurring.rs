@@ -174,7 +174,7 @@ impl RecurringJobSchedule {
                 let mut next = schedule_iter.next().ok_or(Error::InvalidSchedule)?;
 
                 while next < now {
-                    // Walk the time up to the nearest time that is still before now. This ensures
+                    // Walk the time up to the next one in the future. This ensures
                     // that the timer catches up without running a bunch of jobs, when it's way
                     // behind due to the server being shut down.
                     next = schedule_iter.next().ok_or(Error::InvalidSchedule)?;
