@@ -69,7 +69,11 @@ async fn main() -> Result<(), Error> {
 
 [Full Development Notes](https://imfeld.dev/notes/projects_effectum)
 
-# Roadmap
+# Changelog
+
+## 0.2
+
+- Support for recurring jobs
 
 ## 0.1
 
@@ -82,10 +86,11 @@ async fn main() -> Result<(), Error> {
 - Immediately schedule a retry for jobs that were running when the process restarts unexpectedly
 - Cancel or modify pending jobs
 
+# Roadmap
+
 ## Soon
 
 - Optional sweeper to prevent "done" job data from building up indefinitely
-- Create recurring scheduled jobs
 
 ## Later
 
