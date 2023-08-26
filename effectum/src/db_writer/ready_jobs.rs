@@ -12,9 +12,10 @@ use tokio::sync::Mutex;
 use tracing::{event, Level};
 use uuid::Uuid;
 
-use crate::{shared_state::SharedState, worker::RunningJobs, Result, RunningJob, RunningJobData};
-
 use super::DbOperationResult;
+use crate::{
+    shared_state::SharedState, worker::RunningJobs, Error, Result, RunningJob, RunningJobData,
+};
 
 pub(crate) struct ReadyJob {
     pub job: RunningJob,
@@ -49,7 +50,8 @@ fn do_get_ready_jobs(
                 backoff_multiplier,
                 backoff_randomization,
                 backoff_initial_interval,
-                max_retries
+                max_retries,
+                orig_run_at
             FROM active_jobs
             JOIN jobs USING(job_id)
             WHERE active_worker_id IS NULL
@@ -75,6 +77,7 @@ fn do_get_ready_jobs(
         backoff_randomization: f64,
         backoff_initial_interval: i32,
         max_retries: i32,
+        orig_run_at: i64,
     }
 
     let now_timestamp = now.unix_timestamp();
@@ -99,6 +102,7 @@ fn do_get_ready_jobs(
             let backoff_randomization: f64 = row.get(10)?;
             let backoff_initial_interval: i32 = row.get(11)?;
             let max_retries: i32 = row.get(12)?;
+            let orig_run_at: i64 = row.get(13)?;
 
             Ok(JobResult {
                 job_id,
@@ -114,6 +118,7 @@ fn do_get_ready_jobs(
                 backoff_randomization,
                 backoff_initial_interval,
                 max_retries,
+                orig_run_at,
             })
         },
     )?;
@@ -170,6 +175,8 @@ fn do_get_ready_jobs(
             done: Mutex::new(Some(done_tx)),
             queue: queue.clone(),
             expires: AtomicI64::new(expiration),
+            orig_run_at: OffsetDateTime::from_unix_timestamp(job.orig_run_at)
+                .map_err(|_| Error::TimestampOutOfRange("orig_run_at"))?,
         }));
 
         ready_jobs.push(ReadyJob { job, done_rx });

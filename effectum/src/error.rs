@@ -64,6 +64,12 @@ pub enum Error {
     /// Indicates that the queue has closed, and so the attempted operation could not be completed.
     #[error("Queue closed unexpectedly")]
     QueueClosed,
+    /// The passed schedule specification is invalid
+    #[error("Invalid schedule specification")]
+    InvalidSchedule,
+    /// A recurring job with the same ID already exists
+    #[error("Recurring job {0} already exists")]
+    RecurringJobAlreadyExists(String),
 }
 
 impl From<InteractError> for Error {

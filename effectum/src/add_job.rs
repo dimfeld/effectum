@@ -12,6 +12,7 @@ use crate::{
         update_job::UpdateJobArgs,
         DbOperation, DbOperationType,
     },
+    shared_state::SharedState,
     worker::log_error,
     Error, Queue, Result, SmartString,
 };
@@ -42,6 +43,7 @@ pub struct Job {
     pub timeout: Duration,
     /// How much extra time a heartbeat will add to the expiration time.
     pub heartbeat_increment: Duration,
+    pub(crate) from_recurring: Option<i64>,
 }
 
 impl Job {
@@ -89,6 +91,7 @@ impl Default for Job {
             retries: Default::default(),
             timeout: Duration::from_secs(300),
             heartbeat_increment: Duration::from_secs(120),
+            from_recurring: Default::default(),
         }
     }
 }
@@ -179,6 +182,11 @@ impl JobBuilder {
     /// Set the heartbeat increment of the job.
     pub fn heartbeat_increment(mut self, heartbeat_increment: Duration) -> Self {
         self.job.heartbeat_increment = heartbeat_increment;
+        self
+    }
+
+    pub(crate) fn from_recurring(mut self, recurring_id: i64) -> Self {
+        self.job.from_recurring = Some(recurring_id);
         self
     }
 
@@ -284,22 +292,21 @@ impl JobUpdateBuilder {
     }
 }
 
-impl Queue {
-    async fn notify_for_job_type(
+impl SharedState {
+    pub(crate) async fn notify_for_job_type(
         &self,
         now: OffsetDateTime,
         run_time: OffsetDateTime,
         job_type: &str,
     ) {
         if run_time <= now {
-            let workers = self.state.workers.read().await;
+            let workers = self.workers.read().await;
             workers.new_job_available(job_type);
         } else {
             let mut job_type = SmartString::from(job_type);
             job_type.shrink_to_fit();
             log_error(
-                self.state
-                    .pending_jobs_tx
+                self.pending_jobs_tx
                     .send((job_type, run_time.unix_timestamp()))
                     .await,
             );
@@ -307,14 +314,13 @@ impl Queue {
     }
 
     /// Submit a job to the queue
-    pub async fn add_job(&self, job_config: Job) -> Result<Uuid> {
+    pub(crate) async fn add_job(&self, job_config: Job) -> Result<Uuid> {
         let job_type = job_config.job_type.clone();
-        let now = self.state.time.now();
+        let now = self.time.now();
         let run_time = job_config.run_at.unwrap_or(now);
 
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        self.state
-            .db_write_tx
+        self.db_write_tx
             .send(DbOperation {
                 worker_id: 0,
                 span: Span::current(),
@@ -334,11 +340,12 @@ impl Queue {
     }
 
     /// Submit multiple jobs to the queue
+    #[instrument(skip(self))]
     pub async fn add_jobs(&self, jobs: Vec<Job>) -> Result<Vec<Uuid>> {
         let mut ready_job_types: HashSet<String> = HashSet::default();
         let mut pending_job_types: HashMap<String, i64> = HashMap::default();
 
-        let now = self.state.time.now();
+        let now = self.time.now();
         let now_ts = now.unix_timestamp();
         for job_config in &jobs {
             let run_time = job_config
@@ -356,8 +363,7 @@ impl Queue {
         }
 
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        self.state
-            .db_write_tx
+        self.db_write_tx
             .send(DbOperation {
                 worker_id: 0,
                 span: Span::current(),
@@ -374,17 +380,29 @@ impl Queue {
         for (job_type, job_time) in pending_job_types {
             let mut job_type = SmartString::from(job_type);
             job_type.shrink_to_fit();
-            log_error(self.state.pending_jobs_tx.send((job_type, job_time)).await);
+            log_error(self.pending_jobs_tx.send((job_type, job_time)).await);
         }
 
         if !ready_job_types.is_empty() {
-            let workers = self.state.workers.read().await;
+            let workers = self.workers.read().await;
             for job_type in ready_job_types {
                 workers.new_job_available(&job_type);
             }
         }
 
         Ok(ids)
+    }
+}
+
+impl Queue {
+    /// Submit a job to the queue
+    pub async fn add_job(&self, job: Job) -> Result<Uuid> {
+        self.state.add_job(job).await
+    }
+
+    /// Submit multiple jobs to the queue
+    pub async fn add_jobs(&self, jobs: Vec<Job>) -> Result<Vec<Uuid>> {
+        self.state.add_jobs(jobs).await
     }
 
     /// Update some aspects of a job. Jobs can not be updated while running or after they have
@@ -408,7 +426,9 @@ impl Queue {
 
         if let Some(new_run_at) = new_run_at {
             let now = self.state.time.now();
-            self.notify_for_job_type(now, new_run_at, &job_type).await;
+            self.state
+                .notify_for_job_type(now, new_run_at, &job_type)
+                .await;
         }
 
         Ok(())
@@ -442,6 +462,7 @@ impl Queue {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
+    use temp_dir::TempDir;
     use ulid::Ulid;
 
     use crate::{
@@ -454,7 +475,8 @@ mod tests {
 
     #[tokio::test]
     async fn add_job() {
-        let queue = create_test_queue().await;
+        let dir = TempDir::new().unwrap();
+        let queue = create_test_queue(dir).await;
 
         let job = Job::builder("a_job").priority(1).build();
 
@@ -470,7 +492,8 @@ mod tests {
 
     #[tokio::test]
     async fn add_job_at_time() {
-        let queue = create_test_queue().await;
+        let dir = TempDir::new().unwrap();
+        let queue = create_test_queue(dir).await;
 
         let job_time = (queue.state.time.now() + time::Duration::minutes(10))
             .replace_nanosecond(0)

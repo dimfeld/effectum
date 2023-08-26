@@ -3,7 +3,10 @@ use rusqlite_migration::{Migrations, M};
 
 use crate::Result;
 
-const MIGRATIONS: [&str; 1] = [include_str!("../migrations/00001-init.sql")];
+const MIGRATIONS: [&str; 2] = [
+    include_str!("../migrations/00001-init.sql"),
+    include_str!("../migrations/00002-rename-column.sql"),
+];
 
 fn create_migrations() -> Migrations<'static> {
     let items = MIGRATIONS.iter().map(|m| M::up(m)).collect::<Vec<_>>();

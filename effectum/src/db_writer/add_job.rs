@@ -1,13 +1,10 @@
-use rusqlite::Statement;
-use rusqlite::{named_params, Connection};
+use rusqlite::{named_params, Connection, Statement};
 use time::OffsetDateTime;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use crate::Job;
-use crate::Result;
-
 use super::DbOperationResult;
+use crate::{Job, JobState, Result};
 
 pub(crate) struct AddJobArgs {
     pub job: Job,
@@ -25,32 +22,31 @@ pub(crate) struct AddMultipleJobsArgs {
     pub result_tx: oneshot::Sender<Result<AddMultipleJobsResult>>,
 }
 
-const INSERT_JOBS_QUERY: &str = r##"
+pub(super) const INSERT_JOBS_QUERY: &str = r##"
     INSERT INTO jobs
-    (external_id, job_type, status, priority, weight, from_recurring_job, orig_run_at, payload,
+    (external_id, job_type, status, priority, weight, from_base_job, orig_run_at, payload,
         max_retries, backoff_multiplier, backoff_randomization, backoff_initial_interval,
         added_at, default_timeout, heartbeat_increment, run_info)
     VALUES
-    ($external_id, $job_type, 'active', $priority, $weight, $from_recurring_job, $run_at, $payload,
+    ($external_id, $job_type, $status, $priority, $weight, $from_base_job, $run_at, $payload,
         $max_retries, $backoff_multiplier, $backoff_randomization, $backoff_initial_interval,
         $added_at, $default_timeout, $heartbeat_increment, '[]')
 "##;
 
-const INSERT_ACTIVE_JOBS_QUERY: &str = r##"
+pub(super) const INSERT_ACTIVE_JOBS_QUERY: &str = r##"
     INSERT INTO active_jobs
     (job_id,  priority, run_at)
     VALUES
     ($job_id, $priority, $run_at)
 "##;
 
-fn execute_add_job_stmt(
+pub(super) fn execute_add_job_stmt(
     tx: &Connection,
     jobs_stmt: &mut Statement,
-    active_jobs_stmt: &mut Statement,
     job_config: &Job,
     now: OffsetDateTime,
-    from_recurring_job: Option<i64>,
-) -> Result<Uuid> {
+    status: Option<JobState>,
+) -> Result<(i64, Uuid)> {
     let external_id: Uuid = ulid::Ulid::new().into();
     let run_time = job_config.run_at.unwrap_or(now).unix_timestamp();
 
@@ -59,7 +55,8 @@ fn execute_add_job_stmt(
         "$job_type": job_config.job_type,
         "$priority": job_config.priority,
         "$weight": job_config.weight,
-        "$from_recurring_job": from_recurring_job,
+        "$from_base_job": job_config.from_recurring,
+        "$status": status.unwrap_or(JobState::Pending).as_str(),
         "$run_at": run_time,
         "$payload": job_config.payload.as_slice(),
         "$max_retries": job_config.retries.max_retries,
@@ -73,27 +70,34 @@ fn execute_add_job_stmt(
 
     let job_id = tx.last_insert_rowid();
 
+    Ok((job_id, external_id))
+}
+
+pub(super) fn execute_add_active_job_stmt(
+    active_jobs_stmt: &mut Statement,
+    job_id: i64,
+    job_config: &Job,
+    now: OffsetDateTime,
+) -> Result<()> {
+    let run_time = job_config.run_at.unwrap_or(now).unix_timestamp();
     active_jobs_stmt.execute(named_params! {
         "$job_id": job_id,
         "$priority": job_config.priority,
         "$run_at": run_time,
     })?;
 
-    Ok(external_id)
+    Ok(())
 }
 
 fn do_add_job(tx: &Connection, job_config: &Job, now: OffsetDateTime) -> Result<Uuid> {
     let mut jobs_stmt = tx.prepare_cached(INSERT_JOBS_QUERY)?;
     let mut active_jobs_stmt = tx.prepare_cached(INSERT_ACTIVE_JOBS_QUERY)?;
 
-    execute_add_job_stmt(
-        tx,
-        &mut jobs_stmt,
-        &mut active_jobs_stmt,
-        job_config,
-        now,
-        None,
-    )
+    let (job_id, external_id) = execute_add_job_stmt(tx, &mut jobs_stmt, job_config, now, None)?;
+
+    execute_add_active_job_stmt(&mut active_jobs_stmt, job_id, job_config, now)?;
+
+    Ok(external_id)
 }
 
 pub(super) fn add_job(tx: &Connection, args: AddJobArgs) -> DbOperationResult {
@@ -118,16 +122,11 @@ fn do_add_jobs(
     let mut active_jobs_stmt = tx.prepare_cached(INSERT_ACTIVE_JOBS_QUERY)?;
 
     for job_config in jobs {
-        let job_ids = execute_add_job_stmt(
-            tx,
-            &mut jobs_stmt,
-            &mut active_jobs_stmt,
-            &job_config,
-            now,
-            None,
-        )?;
+        let (internal, external) =
+            execute_add_job_stmt(tx, &mut jobs_stmt, &job_config, now, None)?;
+        execute_add_active_job_stmt(&mut active_jobs_stmt, internal, &job_config, now)?;
 
-        ids.push(job_ids);
+        ids.push(external);
     }
 
     Ok(AddMultipleJobsResult { ids })

@@ -122,7 +122,6 @@ impl Queue {
         let pending_jobs_monitor =
             monitor_pending_jobs(shared_state.clone(), pending_jobs_rx).await?;
 
-        // TODO task to schedule recurring jobs
         // TODO Optional task to delete old jobs from `done_jobs`
 
         let q = Queue {
@@ -211,6 +210,7 @@ impl Drop for Queue {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
+    use temp_dir::TempDir;
     use tracing::{event, Level};
 
     use crate::{
@@ -226,7 +226,8 @@ mod tests {
 
     #[tokio::test]
     async fn create_queue() {
-        create_test_queue().await;
+        let dir = TempDir::new().unwrap();
+        create_test_queue(dir).await;
     }
 
     #[tokio::test]
@@ -642,8 +643,7 @@ mod tests {
         assert_eq!(status.run_info[2].info.to_string(), "\"Job expired\"");
     }
 
-    // TODO Run this in virtual time once https://github.com/tokio-rs/tokio/pull/5115 is merged.
-    #[tokio::test]
+    #[tokio::test()]
     async fn manual_heartbeat() {
         let mut test = TestEnvironment::new().await;
         let job_def = JobRunner::builder(
@@ -670,7 +670,6 @@ mod tests {
         wait_for_job("job to succeed", &test.queue, job_id).await;
     }
 
-    // TODO Run this in virtual time once https://github.com/tokio-rs/tokio/pull/5115 is merged.
     #[tokio::test]
     async fn auto_heartbeat() {
         let mut test = TestEnvironment::new().await;
@@ -1063,12 +1062,6 @@ mod tests {
         #[tokio::test]
         #[ignore = "not implemented yet"]
         async fn clear_jobs() {
-            unimplemented!();
-        }
-
-        #[tokio::test]
-        #[ignore = "not implemented yet"]
-        async fn recurring_jobs() {
             unimplemented!();
         }
     }

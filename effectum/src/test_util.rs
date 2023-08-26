@@ -87,9 +87,22 @@ impl Deref for TestQueue {
     }
 }
 
-pub async fn create_test_queue() -> TestQueue {
-    let dir = temp_dir::TempDir::new().unwrap();
-    let path = dir.child("test.sqlite");
+impl TestQueue {
+    pub async fn close_and_persist(self) -> TempDir {
+        self.queue
+            .close(Duration::from_secs(1))
+            .await
+            .expect("closing queue");
+        self.dir
+    }
+}
+
+pub fn queue_db_path(dir: &TempDir) -> PathBuf {
+    dir.child("test.sqlite")
+}
+
+pub async fn create_test_queue(dir: TempDir) -> TestQueue {
+    let path = queue_db_path(&dir);
     let queue = crate::Queue::new(&path).await.unwrap();
 
     TestQueue { queue, path, dir }
@@ -172,8 +185,13 @@ pub(crate) struct TestEnvironment {
 
 impl TestEnvironment {
     pub async fn new() -> Self {
+        let dir = TempDir::new().unwrap();
+        Self::from_path(dir).await
+    }
+
+    pub async fn from_path(dir: TempDir) -> Self {
         Lazy::force(&TRACING);
-        let queue = create_test_queue().await;
+        let queue = create_test_queue(dir).await;
 
         let registry = JobRegistry::new(job_list());
 
@@ -224,6 +242,7 @@ where
         match f().await {
             Ok(value) => return value,
             Err(e) => {
+                tracing::trace!(%label, %e, "Checking... not ready yet");
                 last_error = e;
             }
         };
@@ -240,15 +259,11 @@ where
 
         check_interval = std::cmp::min(check_interval * 2, max_check);
         let sleep_time = std::cmp::min(
-            final_time - now,
-            time::Duration::milliseconds(check_interval),
+            (final_time - now).whole_milliseconds() as u64,
+            check_interval,
         );
 
-        // Since we're often using virtual time, we have to sleep here with the blocking
-        // APIs to actually wait.
-        tokio::task::spawn_blocking(move || std::thread::sleep(sleep_time.unsigned_abs()))
-            .await
-            .unwrap();
+        tokio::time::sleep(Duration::from_millis(sleep_time)).await;
     }
 }
 
