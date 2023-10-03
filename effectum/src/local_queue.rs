@@ -1,6 +1,6 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
-use deadpool_sqlite::{Hook, HookError, HookErrorCause};
+use deadpool_sqlite::{Hook, HookError};
 use rusqlite::Connection;
 use tokio::task::JoinHandle;
 
@@ -89,8 +89,8 @@ impl Queue {
                 Box::pin(async move {
                     conn.interact(register_functions)
                         .await
-                        .map_err(|e| HookError::Abort(HookErrorCause::Message(e.to_string())))?
-                        .map_err(|e| HookError::Abort(HookErrorCause::Backend(e)))?;
+                        .map_err(|e| HookError::StaticMessage(e.to_string().leak()))?
+                        .map_err(|e| HookError::Backend(e))?;
                     Ok(())
                 })
             }))
