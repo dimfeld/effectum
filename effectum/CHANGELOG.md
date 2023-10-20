@@ -1,3 +1,7 @@
+# 0.3.0
+
+- Upgrade to rusqlite 0.29.0
+
 # 0.2.0
 
 - Support recurring jobs using cron strings or simple "every N" schedules.
