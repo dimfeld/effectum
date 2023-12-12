@@ -1,3 +1,7 @@
+# 0.4.0
+
+- Upgrade to rusqlite 0.30.0
+
 # 0.3.0
 
 - Upgrade to rusqlite 0.29.0
