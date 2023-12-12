@@ -773,7 +773,7 @@ mod tests {
         assert!(matches!(err, Error::NotFound));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn update_same_schedule() {
         let test = TestEnvironment::new().await;
         let _worker = test.worker().build().await.expect("Failed to build worker");
@@ -797,7 +797,9 @@ mod tests {
             .expect("Retrieving job status");
         assert!(job_status.next_run.is_some());
 
+        tokio::time::pause();
         tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::resume();
 
         test.queue
             .update_recurring_job("job_id".to_string(), schedule, job)
@@ -817,7 +819,7 @@ mod tests {
     async fn update_payload() {
         let test = TestEnvironment::new().await;
         let _worker = test.worker().build().await.expect("Failed to build worker");
-        let job = JobBuilder::new("counter")
+        let job = JobBuilder::new("set-counter")
             .json_payload(&serde_json::json!(1))
             .expect("json_payload")
             .build();
@@ -837,7 +839,7 @@ mod tests {
             .expect("Retrieving job status");
         assert!(job_status.next_run.is_some());
 
-        let new_job = JobBuilder::new("counter")
+        let new_job = JobBuilder::new("set-counter")
             .json_payload(&serde_json::json!(2))
             .expect("json_payload")
             .build();
@@ -1224,7 +1226,7 @@ mod tests {
         event!(Level::INFO, "Closed Queue");
 
         // Wait a while with the queue closed.
-        let after_two_runs = second_run_at + Duration::from_secs(11);
+        let after_two_runs = second_run_at + Duration::from_secs(21);
         tokio::time::sleep_until(
             test.time
                 .instant_for_timestamp(after_two_runs.unix_timestamp()),
@@ -1234,6 +1236,13 @@ mod tests {
         // Restart the queue again.
         event!(Level::INFO, "Restarting queue");
         let test = TestEnvironment::from_path(dir).await;
+        assert_eq!(
+            test.context
+                .counter
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "counter starts at 0"
+        );
         let _worker = test.worker().build().await.expect("Failed to build worker");
 
         let job_status = test
@@ -1245,6 +1254,14 @@ mod tests {
         event!(Level::INFO, %next_run_at);
         wait_for_job("first run after restart", &test.queue, next_job_id).await;
 
+        assert_eq!(
+            test.context
+                .counter
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "task should run again after restart"
+        );
+
         // Wait a little more just to make sure that we aren't double-running the task.
         tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -1252,7 +1269,8 @@ mod tests {
             test.context
                 .counter
                 .load(std::sync::atomic::Ordering::Relaxed),
-            1
+            1,
+            "task should not run again immediately"
         );
     }
 }

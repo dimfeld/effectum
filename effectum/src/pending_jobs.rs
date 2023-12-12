@@ -131,8 +131,12 @@ async fn pending_jobs_task(
     loop {
         let next_time = next_times.values().copied().min().unwrap_or(0);
 
-        let next_time_pretty = NextTimeDisplay::from(next_time);
-        event!(Level::TRACE, next_time=%next_time_pretty, "Waiting for pending job");
+        if next_time > 0 {
+            let next_time_pretty = NextTimeDisplay::from(next_time);
+            event!(Level::TRACE, next_time=%next_time_pretty, "Waiting for pending job");
+        } else {
+            event!(Level::TRACE, "No pending jobs");
+        }
 
         tokio::select! {
             _ = tokio::time::sleep_until(queue.time.instant_for_timestamp(next_time)), if next_time > 0 =>{

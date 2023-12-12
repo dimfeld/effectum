@@ -118,6 +118,16 @@ pub fn job_list() -> Vec<JobRunner<Arc<TestContext>>> {
     })
     .build();
 
+    let set_count_task =
+        JobRunner::builder("set-counter", |job, context: Arc<TestContext>| async move {
+            let payload: usize = job.json_payload().unwrap_or(1);
+            context
+                .counter
+                .store(payload, std::sync::atomic::Ordering::Relaxed);
+            Ok::<_, String>("passed")
+        })
+        .build();
+
     let sleep_task = JobRunner::builder("sleep", sleep_task).build();
 
     let push_payload = JobRunner::builder(
@@ -168,6 +178,7 @@ pub fn job_list() -> Vec<JobRunner<Arc<TestContext>>> {
 
     vec![
         count_task,
+        set_count_task,
         sleep_task,
         push_payload,
         wait_for_watch_task,
@@ -231,7 +242,7 @@ where
     Fut: Future<Output = Result<T, E>>,
     E: std::fmt::Display,
 {
-    let max_check = 1000;
+    let max_check = 50;
     let mut check_interval = 10;
     let start_time = OffsetDateTime::now_utc();
     let final_time = start_time + timeout;
