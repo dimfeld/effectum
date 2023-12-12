@@ -1340,4 +1340,46 @@ mod tests {
         job_ids.sort();
         assert_eq!(job_ids, vec!["job_id_1", "job_id_2", "job_id_3"]);
     }
+
+    #[tokio::test]
+    async fn list_prefix_with_no_matches() {
+        let test = TestEnvironment::new().await;
+        let _worker = test.worker().build().await.expect("Failed to build worker");
+        let job = JobBuilder::new("counter")
+            .json_payload(&serde_json::json!(1))
+            .expect("json_payload")
+            .build();
+
+        let schedule = RecurringJobSchedule::RepeatEvery {
+            interval: Duration::from_secs(10),
+        };
+        test.queue
+            .add_recurring_job("job_id_3".to_string(), schedule.clone(), job.clone(), false)
+            .await
+            .expect("add_recurring_job");
+        test.queue
+            .add_recurring_job("job_id_1".to_string(), schedule.clone(), job.clone(), false)
+            .await
+            .expect("add_recurring_job");
+        test.queue
+            .add_recurring_job(
+                "other_job".to_string(),
+                schedule.clone(),
+                job.clone(),
+                false,
+            )
+            .await
+            .expect("add_recurring_job");
+        test.queue
+            .add_recurring_job("job_id_2".to_string(), schedule.clone(), job.clone(), false)
+            .await
+            .expect("add_recurring_job");
+
+        let job_ids = test
+            .queue
+            .list_recurring_jobs_with_prefix("not_found_jobs")
+            .await
+            .expect("Listing jobs");
+        assert!(job_ids.is_empty());
+    }
 }
