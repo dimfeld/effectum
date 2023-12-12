@@ -372,6 +372,30 @@ impl Queue {
 
         Ok(recurring_info)
     }
+
+    /// Return the IDs of all recurring jobs with the given prefix
+    pub async fn list_recurring_jobs_with_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<String>, Error> {
+        let conn = self.state.read_conn_pool.get().await?;
+        let prefix = format!("{prefix}%");
+        let ids = conn
+            .interact(move |db| {
+                let mut stmt = db.prepare_cached(
+                    r##"SELECT external_id
+                        FROM recurring
+                        WHERE external_id LIKE ?"##,
+                )?;
+                let ids = stmt
+                    .query_map([prefix], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, Error>(ids)
+            })
+            .await??;
+
+        Ok(ids)
+    }
 }
 
 #[cfg(test)]
@@ -1272,5 +1296,48 @@ mod tests {
             1,
             "task should not run again immediately"
         );
+    }
+
+    #[tokio::test]
+    async fn list_prefix() {
+        let test = TestEnvironment::new().await;
+        let _worker = test.worker().build().await.expect("Failed to build worker");
+        let job = JobBuilder::new("counter")
+            .json_payload(&serde_json::json!(1))
+            .expect("json_payload")
+            .build();
+
+        let schedule = RecurringJobSchedule::RepeatEvery {
+            interval: Duration::from_secs(10),
+        };
+        test.queue
+            .add_recurring_job("job_id_3".to_string(), schedule.clone(), job.clone(), false)
+            .await
+            .expect("add_recurring_job");
+        test.queue
+            .add_recurring_job("job_id_1".to_string(), schedule.clone(), job.clone(), false)
+            .await
+            .expect("add_recurring_job");
+        test.queue
+            .add_recurring_job(
+                "other_job".to_string(),
+                schedule.clone(),
+                job.clone(),
+                false,
+            )
+            .await
+            .expect("add_recurring_job");
+        test.queue
+            .add_recurring_job("job_id_2".to_string(), schedule.clone(), job.clone(), false)
+            .await
+            .expect("add_recurring_job");
+
+        let mut job_ids = test
+            .queue
+            .list_recurring_jobs_with_prefix("job_id_")
+            .await
+            .expect("Listing jobs");
+        job_ids.sort();
+        assert_eq!(job_ids, vec!["job_id_1", "job_id_2", "job_id_3"]);
     }
 }

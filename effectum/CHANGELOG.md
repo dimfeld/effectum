@@ -1,6 +1,7 @@
-# 0.4.0
+# 0.4.0 (beta)
 
 - Upgrade to rusqlite 0.30.0
+- Add `list_recurring_jobs_with_prefix` function. 
 
 # 0.3.0
 
