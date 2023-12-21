@@ -39,12 +39,6 @@ async fn main() -> Result<(), Error> {
     // database pool or other things here
   });
 
-  // Create a worker to run jobs.
-  let worker = Worker::builder(&queue, context)
-    .max_concurrency(10)
-    .jobs([a_job])
-    .build();
-
   // Submit a job to the queue.
   let job_id = Job::builder("remind_me")
     .run_at(time::OffsetDateTime::now_utc() + std::time::Duration::from_secs(3600))
@@ -55,11 +49,20 @@ async fn main() -> Result<(), Error> {
     .add_to(&queue)
     .await?;
 
-  // See what's happening with the job.
+  // Job is waiting on available workers. 
   let status = queue.get_job_status(job_id).await?;
   assert_eq!(status.state, JobState::Pending);
 
-  // Do other stuff...
+  // Create a worker to handle remind_me jobs.
+  let worker = Worker::builder(&queue, context)
+    .max_concurrency(10)
+    .jobs([a_job])
+    .build()
+    .await?;
+
+  // Job has now been executed. 
+  let status = queue.get_job_status(job_id).await?;
+  assert_eq!(status.state, JobState::Succeeded);
 
   Ok(())
 }
