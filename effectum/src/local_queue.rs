@@ -118,9 +118,13 @@ impl Queue {
         // Handle any jobs that were not cleanly finished from a previous run.
         handle_active_jobs_at_startup(&shared_state, options.job_recovery_behavior, &mut conn)?;
 
+        info!("Creating DB writer worker");
         let db_write_worker = {
             let shared_state = shared_state.clone();
-            std::thread::spawn(move || db_writer_worker(conn, shared_state, db_write_rx))
+            std::thread::spawn(move || {
+                info!("Spawning thread for DB writer worker");
+                db_writer_worker(conn, shared_state, db_write_rx)
+            })
         };
 
         let pending_jobs_monitor =

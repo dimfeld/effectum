@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use time::OffsetDateTime;
-use tracing::{event, instrument, Level};
+use tracing::{event, info, instrument, Level};
 use uuid::Uuid;
 
 use self::{
@@ -202,6 +202,8 @@ pub(crate) fn db_writer_worker(
     let mut operations = Vec::with_capacity(BATCH_SIZE);
     loop {
         operations.truncate(0);
+
+        info!("Processing {} operations", operations.len());
 
         match operations_rx.blocking_recv() {
             Some(op) => operations.push(op),

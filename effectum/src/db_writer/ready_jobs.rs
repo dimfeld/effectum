@@ -5,6 +5,7 @@ use std::{
         Arc,
     },
 };
+use log::info;
 
 use rusqlite::{named_params, types::Value, Connection};
 use time::OffsetDateTime;
@@ -41,6 +42,7 @@ fn do_get_ready_jobs(
     running_jobs: Arc<RunningJobs>,
     now: OffsetDateTime,
 ) -> Result<Vec<ReadyJob>> {
+    info!("Getting ready jobs");
     let mut stmt = tx.prepare_cached(
         r##"SELECT job_id, external_id, active_jobs.priority, weight,
                 job_type, current_try,
