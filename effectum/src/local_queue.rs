@@ -3,6 +3,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 use deadpool_sqlite::{Hook, HookError};
 use rusqlite::Connection;
 use tokio::task::JoinHandle;
+use tracing::info;
 
 use crate::{
     db_writer::{db_writer_worker, handle_active_jobs_at_startup, DbOperation, DbOperationType},
@@ -87,6 +88,7 @@ impl Queue {
             .recycle_timeout(Some(Duration::from_secs(5 * 60)))
             .post_create(Hook::async_fn(move |conn, _| {
                 Box::pin(async move {
+                    conn.trace(Some(|msg|{ println!("{}", msg); }));
                     conn.interact(register_functions)
                         .await
                         .map_err(|e| HookError::Message(e.to_string()))?
