@@ -33,6 +33,7 @@ tokio = { version = "1.32.0", features = ["rt", "macros", "time", "sync"] }
 tracing = "0.1.37"
 ulid = { version = "1.1.0", features = ["uuid"] }
 uuid = "1.4.1"
+log = "0.4.20"
 
 [dev-dependencies]
 color-eyre = "0.6.2"

@@ -76,6 +76,7 @@ impl Queue {
             .map_err(Error::open_database)?;
         conn.pragma_update(None, "synchronous", "normal")
             .map_err(Error::open_database)?;
+        conn.trace(Some(|msg|{ log::info!("{}", msg); }));
 
         register_functions(&mut conn)?;
         crate::migrations::migrate(&mut conn)?;
@@ -92,7 +93,7 @@ impl Queue {
                         .await
                         .map_err(|e| HookError::Message(e.to_string()))?
                         .map_err(|e| HookError::Backend(e))?;
-                    conn.interact(|c| c.trace(Some(|msg|{ println!("{}", msg); }))).await;
+                    conn.interact(|c| c.trace(Some(|msg|{ log::info!("{}", msg); }))).await;
 
                     Ok(())
                 })
