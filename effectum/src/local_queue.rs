@@ -88,11 +88,12 @@ impl Queue {
             .recycle_timeout(Some(Duration::from_secs(5 * 60)))
             .post_create(Hook::async_fn(move |conn, _| {
                 Box::pin(async move {
-                    conn.trace(Some(|msg|{ println!("{}", msg); }));
                     conn.interact(register_functions)
                         .await
                         .map_err(|e| HookError::Message(e.to_string()))?
                         .map_err(|e| HookError::Backend(e))?;
+                    conn.interact(|c| c.trace(Some(|msg|{ println!("{}", msg); }))).await;
+
                     Ok(())
                 })
             }))
