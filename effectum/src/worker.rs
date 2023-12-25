@@ -34,6 +34,7 @@ struct CancellableTask {
 }
 
 /// A worker that runs jobs from the queue.
+#[must_use = "Workers must be stored. Dropping a worker early will disconnect it from the queue."]
 pub struct Worker {
     /// The worker's internal ID.
     pub id: WorkerId,

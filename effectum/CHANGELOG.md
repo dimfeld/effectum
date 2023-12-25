@@ -3,6 +3,8 @@
 - Upgrade to rusqlite 0.30.0
 - Add `list_recurring_jobs_with_prefix` function. 
 - Add trace message when a `Worker` unregisters.
+- Add `#[must_use]` directive on `Worker`. This helps avoid dropping a Worker too early, which can disconnect it from
+    the queue before you want it to stop.
 
 # 0.3.0
 
