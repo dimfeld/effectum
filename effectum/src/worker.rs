@@ -51,6 +51,7 @@ impl Worker {
     /// but will no longer take new jobs.
     pub async fn unregister(mut self, timeout: Option<std::time::Duration>) -> Result<()> {
         if let Some(task) = self.worker_list_task.take() {
+            event!(Level::INFO, worker_id = %self.id, "Unregistering worker");
             task.close_tx.send(()).ok();
             if let Some(timeout) = timeout {
                 tokio::time::timeout(timeout, task.join_handle)
@@ -83,6 +84,7 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         if let Some(task) = self.worker_list_task.take() {
+            event!(Level::INFO, worker_id = %self.id, "Unregistering worker");
             task.close_tx.send(()).ok();
             tokio::spawn(task.join_handle);
         }

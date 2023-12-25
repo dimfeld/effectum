@@ -2,6 +2,7 @@
 
 - Upgrade to rusqlite 0.30.0
 - Add `list_recurring_jobs_with_prefix` function. 
+- Add trace message when a `Worker` unregisters.
 
 # 0.3.0
 
