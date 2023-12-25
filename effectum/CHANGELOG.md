@@ -1,6 +1,7 @@
-# 0.4.0 (beta)
+# 0.4.0
 
 - Upgrade to rusqlite 0.30.0
+- Upgrade rusqlite_migration to 1.1.0 to keep up with rusqlite.
 - Add `list_recurring_jobs_with_prefix` function. 
 - Add trace message when a `Worker` unregisters.
 - Add `#[must_use]` directive on `Worker`. This helps avoid dropping a Worker too early, which can disconnect it from
