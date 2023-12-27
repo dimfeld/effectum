@@ -33,7 +33,8 @@ struct CancellableTask {
     join_handle: JoinHandle<()>,
 }
 
-/// A worker that runs jobs from the queue.
+/// A worker that runs jobs from the queue. Dropping a worker will disconnect it and stop running
+/// jobs.
 #[must_use = "Workers must be stored. Dropping a worker early will disconnect it from the queue."]
 pub struct Worker {
     /// The worker's internal ID.
@@ -194,7 +195,8 @@ where
         self
     }
 
-    /// Consume this [WorkerBuilder] and create a new [Worker].
+    /// Consume this [WorkerBuilder] and create a new [Worker]. The Worker must be stored, as it
+    /// will automatically disconnect from the Queue when it is dropped.
     pub async fn build(self) -> Result<Worker> {
         let job_defs: HashMap<SmartString, JobRunner<CONTEXT>> =
             if let Some(job_defs) = self.job_defs {
