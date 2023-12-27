@@ -1,3 +1,7 @@
+# 0.4.1
+
+- Ensure that add_job futures don't do anything if you forget to await the future.
+
 # 0.4.0
 
 - Upgrade to rusqlite 0.30.0
