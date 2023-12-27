@@ -320,6 +320,12 @@ impl SharedState {
         let run_time = job_config.run_at.unwrap_or(now);
 
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+
+        // Ensure that non-awaited promises don't do anything. Without this,
+        // we send into the channel to create the job, but don't do the rest,
+        // which causes the job to be added but does not cause the notification.
+        std::future::ready(()).await;
+
         self.db_write_tx
             .send(DbOperation {
                 worker_id: 0,
@@ -361,6 +367,11 @@ impl SharedState {
                     .or_insert(run_time);
             }
         }
+
+        // Ensure that non-awaited promises don't do anything. Without this,
+        // we send into the channel to create the job, but don't do the rest,
+        // which causes the job to be added but does not cause the notification.
+        std::future::ready(()).await;
 
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         self.db_write_tx
