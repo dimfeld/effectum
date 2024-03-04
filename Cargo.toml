@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "effectum",
+  "outbox",
   "stress_test"
 ]
 resolver = "2"

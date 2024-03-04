@@ -1,0 +1,22 @@
+[package]
+name = "outbox"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+effectum = { path = "../effectum" }
+futures = "0.3.30"
+serde = { version = "1.0.197", features = ["derive"] }
+sqlx = { version = "0.7.3", features = ["uuid", "time", "json"] }
+thiserror = "1.0.57"
+time = "0.3.34"
+tokio = { version = "1.36.0", features = ["time", "sync"] }
+tracing = { version = "0.1.40", optional = true }
+uuid = { version = "1.7.0", features = ["serde"] }
+
+[features]
+default=["postgres"]
+postgres = ["sqlx/postgres"]
+tracing = []

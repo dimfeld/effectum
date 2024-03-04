@@ -1,6 +1,7 @@
 use std::{borrow::Cow, time::Duration};
 
 use ahash::{HashMap, HashSet};
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use tracing::{instrument, Span};
 use uuid::Uuid;
@@ -18,7 +19,7 @@ use crate::{
 };
 
 /// A job to be submitted to the queue.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     /// The name of the job, which matches the name used in the [JobRunner](crate::JobRunner) for the job.
     pub job_type: Cow<'static, str>,
@@ -54,7 +55,7 @@ impl Job {
 }
 
 /// `Retries` controls the exponential backoff behavior when retrying failed jobs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Retries {
     /// How many times to retry a job before it is considered to have failed permanently.
     pub max_retries: u32,
@@ -204,7 +205,7 @@ impl JobBuilder {
 /// Specified fields of a job to be updated, using the [Queue::update_job] method.
 /// All of these fields except the job ID are optional, so the update can set
 /// only the desired fields.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobUpdate {
     /// The ID of the job to update
     pub id: Uuid,
