@@ -1,19 +1,24 @@
-//! Outbox pattern listener implementation for PostgreSQL
+//! Outbox pattern listener implementation using PostgreSQL
 
 use std::{sync::Arc, time::Duration};
 
+use effectum::{Job, JobUpdate};
 use futures::future::TryFutureExt;
+use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgListener, Acquire, PgConnection, Row};
 use thiserror::Error;
 #[cfg(feature = "tracing")]
 use tracing::{event, instrument, Level};
-
-use crate::{OutboxRow, QueueOperation};
+use uuid::Uuid;
 
 #[derive(Debug, Error)]
+/// An error that can be returned by outbox operations
 pub enum OutboxError {
+    /// The Postgres database encountered an error
     #[error("Database error {0}")]
     Db(#[from] sqlx::Error),
+
+    /// The job queue encountered an error
     #[error("Error communicating with queue {0}")]
     Queue(#[from] effectum::Error),
 }
@@ -22,6 +27,7 @@ const DEFAULT_NOTIFY_CHANNEL: &str = "effectum-task-outbox";
 const DEFAULT_OUTBOX_TABLE: &str = "effectum_outbox";
 const DEFAULT_LOCK_KEY: u64 = 0x9c766a023f590ad;
 
+/// Options for [PgOutbox]
 pub struct PgOutboxOptions {
     /// The name of the outbox table.
     pub table: Option<String>,
@@ -39,9 +45,14 @@ pub struct PgOutboxOptions {
     pub queue: Arc<effectum::Queue>,
 }
 
+/// An implementation of the transactional outbox pattern, in which jobs are added into a
+/// PostgreSQL table and then transferred into the [Queue].
 pub struct PgOutbox {
     shutdown: tokio::sync::watch::Sender<bool>,
     listen_task: Option<tokio::task::JoinHandle<()>>,
+    /// If the job should only run tasks from a particular version of the code, then set this.
+    code_version: Option<String>,
+    insert_query: String,
 }
 
 struct PgOutboxListener {
@@ -61,6 +72,7 @@ struct PgOutboxListener {
 }
 
 impl PgOutbox {
+    /// Create a new [PgOutbox]
     pub fn new(options: PgOutboxOptions) -> Self {
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let (get_rows_where, delete_where) = if options.code_version.is_some() {
@@ -89,8 +101,13 @@ impl PgOutbox {
             options.lock_key.unwrap_or(DEFAULT_LOCK_KEY)
         );
 
+        let insert_query = format!(
+            "INSERT INTO {table} (code_version, payload)
+            VALUES ($1, $2"
+        );
+
         let listener = PgOutboxListener {
-            code_version: options.code_version,
+            code_version: options.code_version.clone(),
             queue: options.queue,
             lock_query,
             get_rows_query,
@@ -104,15 +121,69 @@ impl PgOutbox {
         Self {
             shutdown: shutdown_tx,
             listen_task: Some(listen_task),
+            code_version: options.code_version,
+            insert_query,
         }
     }
 
+    /// Add a job to the outbox
+    pub async fn add_job(&self, tx: &mut PgConnection, job: Job) -> Result<(), OutboxError> {
+        self.add_queue_operation(tx, &QueueOperation::Add { job })
+            .await
+    }
+
+    /// Update a job in the queue. This only takes effect if the update enters the queue before the job
+    /// has started running.
+    pub async fn update_job(
+        &self,
+        tx: &mut PgConnection,
+        job: JobUpdate,
+    ) -> Result<(), OutboxError> {
+        self.add_queue_operation(tx, &QueueOperation::Update { job })
+            .await
+    }
+
+    /// Cancel a job in the queue. This only takes effect if the update enters the queue before the job
+    /// has started running.
+    pub async fn cancel_job(&self, tx: &mut PgConnection, job_id: Uuid) -> Result<(), OutboxError> {
+        self.add_queue_operation(tx, &QueueOperation::Remove { job_id })
+            .await
+    }
+
+    async fn add_queue_operation(
+        &self,
+        tx: &mut PgConnection,
+        operation: &QueueOperation,
+    ) -> Result<(), OutboxError> {
+        sqlx::query(&self.insert_query)
+            .bind(self.code_version.as_deref())
+            .bind(sqlx::types::Json(operation))
+            .execute(tx)
+            .await?;
+        Ok(())
+    }
+
+    /// Shut down the queue outbox listener.
     pub async fn close(&mut self) {
         self.shutdown.send(true).ok();
         if let Some(task) = self.listen_task.take() {
             task.await.ok();
         }
     }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "op")]
+enum QueueOperation {
+    Add { job: Job },
+    Remove { job_id: Uuid },
+    Update { job: JobUpdate },
+}
+
+#[derive(sqlx::FromRow)]
+struct OutboxRow {
+    id: i64,
+    payload: sqlx::types::Json<QueueOperation>,
 }
 
 impl PgOutboxListener {
