@@ -17,6 +17,6 @@ tracing = { version = "0.1.40", optional = true }
 uuid = { version = "1.7.0", features = ["serde"] }
 
 [features]
-default=["postgres"]
+default=["postgres", "tracing"]
 postgres = ["sqlx/postgres"]
-tracing = []
+tracing = ["dep:tracing"]
