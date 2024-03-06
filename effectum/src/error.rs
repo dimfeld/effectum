@@ -72,6 +72,13 @@ pub enum Error {
     RecurringJobAlreadyExists(String),
 }
 
+impl Error {
+    /// Returns if the error indicates that an update or cancel request occurred too late
+    pub fn is_update_too_late(&self) -> bool {
+        matches!(self, Error::JobRunning | Error::JobFinished)
+    }
+}
+
 impl From<InteractError> for Error {
     fn from(e: InteractError) -> Self {
         Error::DbInteract(e.to_string())

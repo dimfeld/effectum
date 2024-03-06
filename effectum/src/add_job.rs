@@ -21,6 +21,8 @@ use crate::{
 /// A job to be submitted to the queue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
+    /// A unique identifier for the job.
+    pub id: Uuid,
     /// The name of the job, which matches the name used in the [JobRunner](crate::JobRunner) for the job.
     pub job_type: Cow<'static, str>,
     /// Jobs with higher `priority` will be executed first.
@@ -84,6 +86,7 @@ impl Default for Retries {
 impl Default for Job {
     fn default() -> Self {
         Self {
+            id: Uuid::now_v7(),
             job_type: Default::default(),
             priority: 0,
             weight: 1,
@@ -475,7 +478,7 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use temp_dir::TempDir;
-    use ulid::Ulid;
+    use uuid::Uuid;
 
     use crate::{
         test_util::{
@@ -676,7 +679,7 @@ mod tests {
         let result = test
             .queue
             .update_job(
-                JobUpdate::builder(Ulid::new().into())
+                JobUpdate::builder(Uuid::now_v7().into())
                     .run_at(test.time.now())
                     .build(),
             )
@@ -778,7 +781,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_nonexistent_job() {
         let test = TestEnvironment::new().await;
-        let result = test.queue.cancel_job(Ulid::new().into()).await;
+        let result = test.queue.cancel_job(Uuid::now_v7().into()).await;
 
         assert!(matches!(result, Err(Error::NotFound)));
     }
