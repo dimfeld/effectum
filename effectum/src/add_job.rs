@@ -1,6 +1,7 @@
 use std::{borrow::Cow, time::Duration};
 
 use ahash::{HashMap, HashSet};
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use tracing::{instrument, Span};
 use uuid::Uuid;
@@ -18,8 +19,13 @@ use crate::{
 };
 
 /// A job to be submitted to the queue.
-#[derive(Debug, Clone)]
+/// Jobs are uniquely identified by their `id`, so adding a job with the same ID twice will fail.
+/// If you want to clone the same Job object and submit it multiple times, use [JobBuilder::clone_as_new]
+/// to generate a new ID with each clone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
+    /// A unique identifier for the job.
+    pub id: Uuid,
     /// The name of the job, which matches the name used in the [JobRunner](crate::JobRunner) for the job.
     pub job_type: Cow<'static, str>,
     /// Jobs with higher `priority` will be executed first.
@@ -51,10 +57,17 @@ impl Job {
     pub fn builder(job_type: impl Into<Cow<'static, str>>) -> JobBuilder {
         JobBuilder::new(job_type)
     }
+
+    /// Clone the [Job] with a new `id`.
+    pub fn clone_as_new(&self) -> Self {
+        let mut job = self.clone();
+        job.id = Uuid::now_v7();
+        job
+    }
 }
 
 /// `Retries` controls the exponential backoff behavior when retrying failed jobs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Retries {
     /// How many times to retry a job before it is considered to have failed permanently.
     pub max_retries: u32,
@@ -83,6 +96,7 @@ impl Default for Retries {
 impl Default for Job {
     fn default() -> Self {
         Self {
+            id: Uuid::now_v7(),
             job_type: Default::default(),
             priority: 0,
             weight: 1,
@@ -204,7 +218,7 @@ impl JobBuilder {
 /// Specified fields of a job to be updated, using the [Queue::update_job] method.
 /// All of these fields except the job ID are optional, so the update can set
 /// only the desired fields.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobUpdate {
     /// The ID of the job to update
     pub id: Uuid,
@@ -474,7 +488,7 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use temp_dir::TempDir;
-    use ulid::Ulid;
+    use uuid::Uuid;
 
     use crate::{
         test_util::{
@@ -675,7 +689,7 @@ mod tests {
         let result = test
             .queue
             .update_job(
-                JobUpdate::builder(Ulid::new().into())
+                JobUpdate::builder(Uuid::now_v7().into())
                     .run_at(test.time.now())
                     .build(),
             )
@@ -777,7 +791,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_nonexistent_job() {
         let test = TestEnvironment::new().await;
-        let result = test.queue.cancel_job(Ulid::new().into()).await;
+        let result = test.queue.cancel_job(Uuid::now_v7().into()).await;
 
         assert!(matches!(result, Err(Error::NotFound)));
     }

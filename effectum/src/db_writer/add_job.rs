@@ -47,11 +47,10 @@ pub(super) fn execute_add_job_stmt(
     now: OffsetDateTime,
     status: Option<JobState>,
 ) -> Result<(i64, Uuid)> {
-    let external_id: Uuid = ulid::Ulid::new().into();
     let run_time = job_config.run_at.unwrap_or(now).unix_timestamp();
 
     jobs_stmt.execute(named_params! {
-        "$external_id": &external_id,
+        "$external_id": &job_config.id,
         "$job_type": job_config.job_type,
         "$priority": job_config.priority,
         "$weight": job_config.weight,
@@ -70,7 +69,7 @@ pub(super) fn execute_add_job_stmt(
 
     let job_id = tx.last_insert_rowid();
 
-    Ok((job_id, external_id))
+    Ok((job_id, job_config.id))
 }
 
 pub(super) fn execute_add_active_job_stmt(
