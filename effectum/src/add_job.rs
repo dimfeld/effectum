@@ -19,6 +19,9 @@ use crate::{
 };
 
 /// A job to be submitted to the queue.
+/// Jobs are uniquely identified by their `id`, so adding a job with the same ID twice will fail.
+/// If you want to clone the same Job object and submit it multiple times, use [JobBuilder::clone_as_new]
+/// to generate a new ID with each clone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     /// A unique identifier for the job.
@@ -53,6 +56,13 @@ impl Job {
     /// Create a [JobBuilder] for the given `job_type`.
     pub fn builder(job_type: impl Into<Cow<'static, str>>) -> JobBuilder {
         JobBuilder::new(job_type)
+    }
+
+    /// Clone the [Job] with a new `id`.
+    pub fn clone_as_new(&self) -> Self {
+        let mut job = self.clone();
+        job.id = Uuid::now_v7();
+        job
     }
 }
 

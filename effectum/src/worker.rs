@@ -483,7 +483,7 @@ mod tests {
     #[should_panic]
     async fn worker_without_jobs_should_panic() {
         let test = TestEnvironment::new().await;
-        Worker::builder(&test.queue, test.context.clone())
+        let _ = Worker::builder(&test.queue, test.context.clone())
             .build()
             .await
             .unwrap();

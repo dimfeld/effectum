@@ -4,6 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension, Statement};
 use time::OffsetDateTime;
 use tokio::sync::oneshot;
 use tracing::{event, Level};
+use uuid::Uuid;
 
 use super::{
     add_job::{execute_add_active_job_stmt, INSERT_ACTIVE_JOBS_QUERY},
@@ -168,9 +169,10 @@ pub(super) fn schedule_next_recurring_job(
     tx: &Connection,
     now: OffsetDateTime,
     insert_job_stmt: &mut Statement,
-    job: Job,
+    mut job: Job,
 ) -> Result<(), Error> {
     // Finally, add the version of the job that will actually run the first time.
+    job.id = Uuid::now_v7();
     let (job_id, _) = execute_add_job_stmt(tx, insert_job_stmt, &job, now, None)?;
     let mut active_insert_stmt = tx.prepare_cached(INSERT_ACTIVE_JOBS_QUERY)?;
     execute_add_active_job_stmt(&mut active_insert_stmt, job_id, &job, now)?;

@@ -1311,11 +1311,21 @@ mod tests {
             interval: Duration::from_secs(10),
         };
         test.queue
-            .add_recurring_job("job_id_3".to_string(), schedule.clone(), job.clone(), false)
+            .add_recurring_job(
+                "job_id_3".to_string(),
+                schedule.clone(),
+                job.clone_as_new(),
+                false,
+            )
             .await
             .expect("add_recurring_job");
         test.queue
-            .add_recurring_job("job_id_1".to_string(), schedule.clone(), job.clone(), false)
+            .add_recurring_job(
+                "job_id_1".to_string(),
+                schedule.clone(),
+                job.clone_as_new(),
+                false,
+            )
             .await
             .expect("add_recurring_job");
         test.queue
@@ -1328,7 +1338,12 @@ mod tests {
             .await
             .expect("add_recurring_job");
         test.queue
-            .add_recurring_job("job_id_2".to_string(), schedule.clone(), job.clone(), false)
+            .add_recurring_job(
+                "job_id_2".to_string(),
+                schedule.clone(),
+                job.clone_as_new(),
+                false,
+            )
             .await
             .expect("add_recurring_job");
 
@@ -1354,11 +1369,21 @@ mod tests {
             interval: Duration::from_secs(10),
         };
         test.queue
-            .add_recurring_job("job_id_3".to_string(), schedule.clone(), job.clone(), false)
+            .add_recurring_job(
+                "job_id_3".to_string(),
+                schedule.clone(),
+                job.clone_as_new(),
+                false,
+            )
             .await
             .expect("add_recurring_job");
         test.queue
-            .add_recurring_job("job_id_1".to_string(), schedule.clone(), job.clone(), false)
+            .add_recurring_job(
+                "job_id_1".to_string(),
+                schedule.clone(),
+                job.clone_as_new(),
+                false,
+            )
             .await
             .expect("add_recurring_job");
         test.queue
@@ -1371,7 +1396,12 @@ mod tests {
             .await
             .expect("add_recurring_job");
         test.queue
-            .add_recurring_job("job_id_2".to_string(), schedule.clone(), job.clone(), false)
+            .add_recurring_job(
+                "job_id_2".to_string(),
+                schedule.clone(),
+                job.clone_as_new(),
+                false,
+            )
             .await
             .expect("add_recurring_job");
 
