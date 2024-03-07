@@ -53,6 +53,7 @@ pub struct PgOutbox {
     /// If the job should only run tasks from a particular version of the code, then set this.
     code_version: Option<String>,
     insert_query: String,
+    notify_query: String,
 }
 
 struct PgOutboxListener {
@@ -94,7 +95,7 @@ impl PgOutbox {
             ORDER BY id LIMIT 50",
         );
 
-        let delete_query = format!("DELETE FROM {table} WHERE id <= $1{delete_where}",);
+        let delete_query = format!("DELETE FROM {table} WHERE id <= $1{delete_where}");
 
         let lock_query = format!(
             "SELECT pg_try_advisory_xact_lock({})",
@@ -104,6 +105,11 @@ impl PgOutbox {
         let insert_query = format!(
             "INSERT INTO {table} (code_version, payload)
             VALUES ($1, $2"
+        );
+
+        let notify_query = format!(
+            "NOTIFY {}",
+            options.channel.as_deref().unwrap_or(DEFAULT_NOTIFY_CHANNEL)
         );
 
         let listener = PgOutboxListener {
@@ -123,6 +129,7 @@ impl PgOutbox {
             listen_task: Some(listen_task),
             code_version: options.code_version,
             insert_query,
+            notify_query,
         }
     }
 
@@ -158,8 +165,9 @@ impl PgOutbox {
         sqlx::query(&self.insert_query)
             .bind(self.code_version.as_deref())
             .bind(sqlx::types::Json(operation))
-            .execute(tx)
+            .execute(&mut *tx)
             .await?;
+        sqlx::query(&self.notify_query).execute(&mut *tx).await?;
         Ok(())
     }
 
@@ -248,6 +256,10 @@ impl PgOutboxListener {
                             listener = None;
                         }
                         Err(e) => {
+                            if matches!(e, sqlx::Error::PoolClosed) {
+                                break;
+                            }
+
                             #[cfg(feature = "tracing")]
                             event!(Level::ERROR, error=?e, "Error listening for queue notify");
                             listener = None;
