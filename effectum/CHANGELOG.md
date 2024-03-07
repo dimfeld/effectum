@@ -1,3 +1,9 @@
+# 0.5.0
+
+- The `Job` type now contains the UUID which can be used to reference the job, instead of this value being generated
+    inside the queue and returned by `add_job`. This helps to know the ID of the job when you may not be able to examine
+    the return value of `add_job`, such as when submitting jobs using a transactional outbox pattern.
+
 # 0.4.1
 
 - Ensure that add_job futures don't do anything if you forget to await the future.
