@@ -790,6 +790,53 @@ mod tests {
         assert_eq!(status.run_info[2].info.to_string(), "\"success\"");
     }
 
+    #[tokio::test]
+    async fn debug_error() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("Fail {0}")]
+        struct TestError(usize);
+
+        let mut test = TestEnvironment::new().await;
+        let job_def = JobRunner::builder(
+            "checkpoint_job",
+            |job, _context: Arc<TestContext>| async move {
+                if job.current_try == 2 {
+                    Ok("success")
+                } else {
+                    Err(TestError(job.current_try as usize))
+                }
+            },
+        )
+        .format_failures_with_debug(true)
+        .build();
+
+        test.registry.add(&job_def);
+        let _worker = test.worker().build().await.expect("failed to build worker");
+
+        let job_id = Job::builder("checkpoint_job")
+            .payload(serde_json::to_vec("initial").unwrap())
+            .retries(crate::Retries {
+                max_retries: 3,
+                backoff_multiplier: 1.0,
+                backoff_initial_interval: Duration::from_millis(1),
+                ..Default::default()
+            })
+            .add_to(&test.queue)
+            .await
+            .expect("failed to add job");
+
+        let status = wait_for_job("job to succeed", &test.queue, job_id).await;
+
+        assert_eq!(status.state, JobState::Succeeded);
+        assert_eq!(status.run_info.len(), 3);
+        assert!(!status.run_info[0].success);
+        assert!(!status.run_info[1].success);
+        assert!(status.run_info[2].success);
+        assert_eq!(status.run_info[0].info.to_string(), "\"TestError(0)\"");
+        assert_eq!(status.run_info[1].info.to_string(), "\"TestError(1)\"");
+        assert_eq!(status.run_info[2].info.to_string(), "\"success\"");
+    }
+
     mod concurrency {
         use super::*;
 
