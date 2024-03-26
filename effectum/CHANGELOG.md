@@ -1,3 +1,7 @@
+# 0.5.1
+
+- Allow configuring whether to use the `Display` or `Debug` formatter to format failure information.
+
 # 0.5.0
 
 - The `Job` type now contains the UUID which can be used to reference the job, instead of this value being generated
