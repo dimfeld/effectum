@@ -1,6 +1,7 @@
 use std::{
     borrow::Borrow,
     fmt::{Debug, Display},
+    marker::PhantomData,
     panic::AssertUnwindSafe,
     sync::Arc,
 };
@@ -95,6 +96,16 @@ where
     pub(crate) autoheartbeat: bool,
 }
 
+/// Options for a [JobRunner]
+#[derive(Debug, Clone, Default)]
+pub struct JobRunnerOptions {
+    /// If false (default), format failures with the [Display] implementation when storing the
+    /// information in the database. If true, use the [Debug] implementation.
+    pub format_failures_with_debug: bool,
+    /// If true, automatically heartbeat the job when it's running.
+    pub autoheartbeat: bool,
+}
+
 impl<CONTEXT> JobRunner<CONTEXT>
 where
     CONTEXT: Send + Sync + Debug + Clone + 'static,
@@ -111,8 +122,34 @@ where
         CONTEXT: Send + Sync + Debug + Clone + 'static,
         Fut: Future<Output = Result<T, E>> + Send,
         T: Send + Debug + Serialize + 'static,
-        E: Send + Display + 'static,
+        E: Send + Debug + Display + 'static,
     {
+        let options = JobRunnerOptions {
+            format_failures_with_debug: false,
+            autoheartbeat,
+        };
+
+        Self::with_options(name, options, runner)
+    }
+
+    /// Create a new [JobRunner] with options
+    pub fn with_options<F, Fut, T, E>(
+        name: impl Into<SmartString>,
+        def: JobRunnerOptions,
+        runner: F,
+    ) -> JobRunner<CONTEXT>
+    where
+        F: Fn(RunningJob, CONTEXT) -> Fut + Send + Sync + Clone + 'static,
+        CONTEXT: Send + Sync + Debug + Clone + 'static,
+        Fut: Future<Output = Result<T, E>> + Send,
+        T: Send + Debug + Serialize + 'static,
+        E: Send + Debug + Display + 'static,
+    {
+        let name = name.into();
+        let JobRunnerOptions {
+            format_failures_with_debug,
+            autoheartbeat,
+        } = def;
         let f = move |job: RunningJob, context: CONTEXT| {
             let runner = runner.clone();
             tokio::spawn(async move {
@@ -148,13 +185,17 @@ where
                     }
                     Ok(Err(e)) => {
                         if explicitly_finished {
-                            event!(
-                                Level::ERROR,
-                                err = %e,
-                                "Job returned error after it was completed"
-                            );
+                            if format_failures_with_debug {
+                                event!(Level::ERROR, err = ?e, "Job returned error after it was completed");
+                            } else {
+                                event!(Level::ERROR, err = %e, "Job returned error after it was completed");
+                            }
                         } else {
-                            let msg = e.to_string();
+                            let msg = if format_failures_with_debug {
+                                format!("{e:?}")
+                            } else {
+                                e.to_string()
+                            };
                             log_error(job.fail(msg).await);
                         }
                     }
@@ -173,40 +214,77 @@ where
     pub fn builder<F, Fut, T, E>(
         name: impl Into<SmartString>,
         runner: F,
-    ) -> JobRunnerBuilder<CONTEXT>
+    ) -> JobRunnerBuilder<F, Fut, T, E, CONTEXT>
     where
         F: Fn(RunningJob, CONTEXT) -> Fut + Send + Sync + Clone + 'static,
         CONTEXT: Send + Sync + Debug + Clone + 'static,
         Fut: Future<Output = Result<T, E>> + Send,
         T: Send + Debug + Serialize + 'static,
-        E: Send + Display + 'static,
+        E: Send + Debug + Display + 'static,
     {
-        let def = JobRunner::new(name, runner, false);
-        JobRunnerBuilder { def }
+        JobRunnerBuilder::new(name, runner)
     }
 }
 
 /// A builder object for a [JobRunner].
-pub struct JobRunnerBuilder<CONTEXT>
+pub struct JobRunnerBuilder<F, Fut, T, E, CONTEXT>
 where
+    F: Fn(RunningJob, CONTEXT) -> Fut + Send + Sync + Clone + 'static,
     CONTEXT: Send + Sync + Debug + Clone + 'static,
+    Fut: Future<Output = Result<T, E>> + Send,
+    T: Send + Debug + Serialize + 'static,
+    E: Send + Debug + Display + 'static,
 {
-    def: JobRunner<CONTEXT>,
+    name: SmartString,
+    runner_fn: F,
+    def: JobRunnerOptions,
+    _fut: PhantomData<Fut>,
+    _t: PhantomData<T>,
+    _e: PhantomData<E>,
+    _context: PhantomData<CONTEXT>,
 }
 
-impl<CONTEXT> JobRunnerBuilder<CONTEXT>
+impl<F, Fut, T, E, CONTEXT> JobRunnerBuilder<F, Fut, T, E, CONTEXT>
 where
+    F: Fn(RunningJob, CONTEXT) -> Fut + Send + Sync + Clone + 'static,
     CONTEXT: Send + Sync + Debug + Clone + 'static,
+    Fut: Future<Output = Result<T, E>> + Send,
+    T: Send + Debug + Serialize + 'static,
+    E: Send + Debug + Display + 'static,
 {
+    /// Create a new [JobRunnerBuilder].
+    pub fn new(name: impl Into<SmartString>, runner_fn: F) -> Self {
+        Self {
+            runner_fn,
+            name: name.into(),
+            def: JobRunnerOptions {
+                format_failures_with_debug: false,
+                autoheartbeat: false,
+            },
+            _fut: PhantomData,
+            _t: PhantomData,
+            _e: PhantomData,
+            _context: PhantomData,
+        }
+    }
+
     /// Set whether the job should automatically send heartbeats while it runs.
     pub fn autoheartbeat(mut self, autoheartbeat: bool) -> Self {
         self.def.autoheartbeat = autoheartbeat;
         self
     }
 
+    /// If true, format failures with the [Debug] implementation when storing the
+    /// information in the database. If false, use the [Display] implementation. The default is
+    /// false.
+    pub fn format_failures_with_debug(mut self, format_failures_with_debug: bool) -> Self {
+        self.def.format_failures_with_debug = format_failures_with_debug;
+        self
+    }
+
     /// Consume the builder, returning a [JobRunner].
     pub fn build(self) -> JobRunner<CONTEXT> {
-        self.def
+        JobRunner::with_options(self.name, self.def, self.runner_fn)
     }
 }
 
