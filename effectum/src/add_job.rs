@@ -20,7 +20,7 @@ use crate::{
 
 /// A job to be submitted to the queue.
 /// Jobs are uniquely identified by their `id`, so adding a job with the same ID twice will fail.
-/// If you want to clone the same Job object and submit it multiple times, use [JobBuilder::clone_as_new]
+/// If you want to clone the same Job object and submit it multiple times, use [Job::clone_as_new]
 /// to generate a new ID with each clone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
