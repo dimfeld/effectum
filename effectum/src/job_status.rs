@@ -136,8 +136,8 @@ pub(crate) enum JobIdQuery {
 }
 
 impl Queue {
-    pub(crate) fn run_job_status_query<'a>(
-        conn: &'a rusqlite::Connection,
+    pub(crate) fn run_job_status_query(
+        conn: &rusqlite::Connection,
         id: JobIdQuery,
         limit: usize,
     ) -> Result<SmallVec<[JobStatus; 1]>, Error> {

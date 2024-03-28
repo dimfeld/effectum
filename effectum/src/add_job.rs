@@ -28,7 +28,7 @@ pub struct Job {
     pub id: Uuid,
     /// The name of the job, which matches the name used in the [JobRunner](crate::JobRunner) for the job.
     pub job_type: Cow<'static, str>,
-    /// A description for this job which can be used to look up the job status. with [Queue::get_jobs_by_name]. This value does not
+    /// A description for this job which can be passed to [Queue::get_jobs_by_name]. This value does not
     /// have to be unique among all jobs.
     pub name: Option<String>,
     /// Jobs with higher `priority` will be executed first.
