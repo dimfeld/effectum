@@ -278,7 +278,7 @@ mod tests {
                     .build(),
                 JobBuilder::new("counter").name("counter2").build(),
                 JobBuilder::new("counter")
-                    .name_opt(Some("counter1"))
+                    .name_opt(Some("counter1".to_string()))
                     .build(),
             ])
             .await

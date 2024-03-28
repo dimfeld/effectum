@@ -28,8 +28,8 @@ pub struct Job {
     pub id: Uuid,
     /// The name of the job, which matches the name used in the [JobRunner](crate::JobRunner) for the job.
     pub job_type: Cow<'static, str>,
-    /// A description for this job which can ease later retrieval of the job status. This does not
-    /// necessarily have to be unique among all jobs.
+    /// A description for this job which can be used to look up the job status. with [Queue::get_jobs_by_name]. This value does not
+    /// have to be unique among all jobs.
     pub name: Option<String>,
     /// Jobs with higher `priority` will be executed first.
     pub priority: i32,
@@ -130,14 +130,16 @@ impl JobBuilder {
         }
     }
 
-    /// Set the name of this job. This value only serves to help with later lookup and does not have to be unique.
+    /// Set the name of this job. This name is purely informational, and does not have to be unique. Jobs can be fetched by
+    /// their name using [Queue::get_jobs_by_name].
     pub fn name(mut self, name: impl ToString) -> Self {
         self.job.name = Some(name.to_string());
         self
     }
 
-    /// Set the name of this job. This value only serves to help with later lookup and does not have to be unique.
-    pub fn name_opt(mut self, name: Option<impl ToString>) -> Self {
+    /// Set the name of this job. This name is purely informational, and does not have to be unique. Jobs can be fetched by
+    /// their name using [Queue::get_jobs_by_name].
+    pub fn name_opt(mut self, name: Option<String>) -> Self {
         self.job.name = name.map(|n| n.to_string());
         self
     }
