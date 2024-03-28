@@ -47,6 +47,8 @@ pub struct RunningJobData {
     /// The id of this job.
     pub id: Uuid,
     pub(crate) job_id: i64,
+    /// The name given to this job
+    pub name: Option<String>,
     /// The ID of the [Worker](crate::worker::Worker) that is running this job.
     pub worker_id: WorkerId,
     /// How many seconds a heartbeat can extend the expiration time.
@@ -83,6 +85,7 @@ impl Debug for RunningJobData {
         f.debug_struct("Job")
             .field("id", &self.id)
             .field("job_id", &self.job_id)
+            .field("name", &self.name)
             .field("worker_id", &self.worker_id)
             .field("heartbeat_increment", &self.heartbeat_increment)
             .field("job_type", &self.job_type)
@@ -111,8 +114,14 @@ impl Display for RunningJobData {
 
         write!(
             f,
-            "Job {{ id: {}, job_type: {}, priority: {}, start_time: {}, expires: {}, try: {} }}",
-            self.id, self.job_type, self.priority, self.start_time, expires, self.current_try
+            "Job {{ id: {}, name: {}, job_type: {}, priority: {}, start_time: {}, expires: {}, try: {} }}",
+            self.id,
+            self.name.as_deref().unwrap_or("_"),
+            self.job_type,
+            self.priority,
+            self.start_time,
+            expires,
+            self.current_try
         )
     }
 }

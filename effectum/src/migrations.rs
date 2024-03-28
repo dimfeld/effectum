@@ -3,9 +3,10 @@ use rusqlite_migration::{Migrations, M};
 
 use crate::Result;
 
-const MIGRATIONS: [&str; 2] = [
+const MIGRATIONS: [&str; 3] = [
     include_str!("../migrations/00001-init.sql"),
     include_str!("../migrations/00002-rename-column.sql"),
+    include_str!("../migrations/00003-job-name-column.sql"),
 ];
 
 fn create_migrations() -> Migrations<'static> {

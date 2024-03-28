@@ -219,7 +219,8 @@ fn update_existing_recurring_job(
             backoff_randomization = ?8,
             backoff_initial_interval = ?9,
             default_timeout = ?10,
-            heartbeat_increment = ?11
+            heartbeat_increment = ?11,
+            name = ?12
         WHERE job_id=?1"##,
     )?;
     base_update_stmt.execute(params![
@@ -234,6 +235,7 @@ fn update_existing_recurring_job(
         job.retries.backoff_initial_interval.as_secs(),
         job.timeout.as_secs(),
         job.heartbeat_increment.as_secs(),
+        job.name,
     ])?;
 
     // Update any pending jobs
@@ -250,7 +252,8 @@ fn update_existing_recurring_job(
             backoff_randomization = ?,
             backoff_initial_interval = ?,
             default_timeout = ?,
-            heartbeat_increment = ?
+            heartbeat_increment = ?,
+            name = ?
         WHERE from_base_job = ? AND status = 'pending'
         RETURNING job_id"##,
     )?;
@@ -269,6 +272,7 @@ fn update_existing_recurring_job(
                 job.retries.backoff_initial_interval.as_secs(),
                 job.timeout.as_secs(),
                 job.heartbeat_increment.as_secs(),
+                job.name,
                 base_job_id,
             ],
             |row| row.get::<_, rusqlite::types::Value>(0),

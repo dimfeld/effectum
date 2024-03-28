@@ -24,7 +24,7 @@ pub(crate) fn create_job_from_recurring_template(
     let query = r##"SELECT job_id,
                 job_type, priority, weight, payload, max_retries,
                 backoff_multiplier, backoff_randomization, backoff_initial_interval,
-                default_timeout, heartbeat_increment, schedule
+                default_timeout, heartbeat_increment, schedule, name
             FROM jobs
             JOIN recurring ON job_id = base_job_id
             WHERE status = 'recurring_base' AND job_id IN rarray(?)
@@ -70,8 +70,15 @@ pub(crate) fn create_job_from_recurring_template(
                         .map_err(|_| Error::InvalidSchedule)
                 })?;
 
+            let name = row
+                .get_ref(12)?
+                .as_str_or_null()
+                .map_err(|e| Error::ColumnType(e.into(), "name"))?
+                .map(|s| s.to_string());
+
             let next_job_time = schedule.find_next_job_time(now, from_time)?;
             let job = JobBuilder::new(job_type)
+                .name_opt(name)
                 .priority(priority)
                 .weight(weight)
                 .payload(payload)
@@ -318,8 +325,14 @@ impl Queue {
                 let schedule: RecurringJobSchedule =
                     serde_json::from_str(&schedule).map_err(|_| Error::InvalidSchedule)?;
 
-                let base_job_info =
-                    Self::run_job_status_query(db, crate::job_status::JobIdQuery::Id(base_job_id))?;
+                let base_job_info = Self::run_job_status_query(
+                    db,
+                    crate::job_status::JobIdQuery::Id(base_job_id),
+                    1,
+                )?
+                .into_iter()
+                .next()
+                .ok_or(Error::NotFound)?;
 
                 let mut find_last_run_stmt = db.prepare_cached(
                     r##"SELECT job_id
@@ -334,10 +347,13 @@ impl Queue {
                     .optional()?;
 
                 let last_run = if let Some(last_run_id) = last_run_id {
-                    Some(Self::run_job_status_query(
+                    Self::run_job_status_query(
                         db,
                         crate::job_status::JobIdQuery::Id(last_run_id),
-                    )?)
+                        1,
+                    )?
+                    .into_iter()
+                    .next()
                 } else {
                     None
                 };
@@ -415,6 +431,7 @@ mod tests {
         let test = TestEnvironment::new().await;
         let _worker = test.worker().build().await.expect("Failed to build worker");
         let job = JobBuilder::new("counter")
+            .name("test")
             .json_payload(&serde_json::json!({ "value": 1 }))
             .expect("json_payload")
             .build();
@@ -486,6 +503,8 @@ mod tests {
         let result = wait_for_job("second run", &test.queue, second_job_id).await;
         assert!(result.started_at.expect("started_at") >= second_run_time);
 
+        assert_eq!(result.name, Some("test".to_string()));
+
         assert_eq!(
             test.context
                 .counter
@@ -499,6 +518,7 @@ mod tests {
         let test = TestEnvironment::new().await;
         let _worker = test.worker().build().await.expect("Failed to build worker");
         let job = JobBuilder::new("counter")
+            .name("testing")
             .json_payload(&serde_json::json!({ "value": 5 }))
             .expect("json_payload")
             .build();
@@ -588,6 +608,7 @@ mod tests {
 
         let result = wait_for_job("second run", &test.queue, second_job_id).await;
         assert!(result.started_at.expect("started_at") >= second_run_time);
+        assert_eq!(result.name, Some("testing".to_string()));
         assert_eq!(
             test.context
                 .counter
@@ -801,7 +822,7 @@ mod tests {
     async fn update_same_schedule() {
         let test = TestEnvironment::new().await;
         let _worker = test.worker().build().await.expect("Failed to build worker");
-        let job = JobBuilder::new("counter")
+        let mut job = JobBuilder::new("counter")
             .json_payload(&serde_json::json!({ "value": 1 }))
             .expect("json_payload")
             .build();
@@ -825,6 +846,8 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
         tokio::time::resume();
 
+        job.name = Some("new_name".to_string());
+
         test.queue
             .update_recurring_job("job_id".to_string(), schedule, job)
             .await
@@ -837,6 +860,7 @@ mod tests {
 
         // The scheduled job and its time to run should be the same.
         assert_eq!(job_status.next_run, new_job_status.next_run);
+        assert_eq!(new_job_status.base_job.name, Some("new_name".to_string()));
     }
 
     #[tokio::test]
@@ -1008,6 +1032,7 @@ mod tests {
         let test = TestEnvironment::new().await;
         let _worker = test.worker().build().await.expect("Failed to build worker");
         let job = JobBuilder::new("counter")
+            .name("testing")
             .json_payload(&serde_json::json!({ "value": 1 }))
             .expect("json_payload")
             .build();
@@ -1078,6 +1103,7 @@ mod tests {
 
         let result = wait_for_job("second run", &test.queue, second_job_id).await;
         assert!(result.started_at.expect("started_at") >= second_run_time);
+        assert_eq!(result.name, Some("testing".to_string()));
 
         assert_eq!(
             test.context
@@ -1112,6 +1138,7 @@ mod tests {
         assert!(job_status.next_run.is_some());
 
         let new_job = JobBuilder::new("counter")
+            .name("testing")
             .json_payload(&serde_json::json!(2))
             .expect("json_payload")
             .build();
@@ -1125,6 +1152,7 @@ mod tests {
             .await
             .expect("Retrieving job status");
         let new_next_run = new_job_status.next_run.expect("next_run");
+        assert_eq!(new_job_status.base_job.name, Some("testing".to_string()));
 
         // The scheduled job and its time to run should be the same.
         let payload: serde_json::Value =
@@ -1132,7 +1160,7 @@ mod tests {
         assert_eq!(payload, serde_json::json!(2));
 
         tokio::time::pause();
-        wait_for_job("waiting for job to run", &test.queue, new_next_run.0).await;
+        let result = wait_for_job("waiting for job to run", &test.queue, new_next_run.0).await;
         assert_eq!(
             test.context
                 .counter
@@ -1140,6 +1168,7 @@ mod tests {
             2,
             "task should have run with new payload"
         );
+        assert_eq!(result.name, Some("testing".to_string()));
     }
 
     #[tokio::test]
@@ -1230,7 +1259,7 @@ mod tests {
             .get_recurring_job_info("job_id".to_string())
             .await
             .expect("Retrieving job status");
-        let (first_job_id, first_run_at) = job_status.next_run.expect("next_run_at");
+        let (first_job_id, _first_run_at) = job_status.next_run.expect("next_run_at");
         wait_for_job("first run", &test.queue, first_job_id).await;
 
         assert_eq!(

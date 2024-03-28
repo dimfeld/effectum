@@ -3,18 +3,13 @@
 
 use std::{
     path::Path,
-    sync::{
-        atomic::{AtomicI64, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use ahash::HashMap;
 use effectum::{Job, JobRunner, Queue, RecurringJobSchedule, RunningJob};
-use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
-use tracing::{event, Level};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
 #[derive(Debug)]

@@ -1,3 +1,7 @@
+# 0.6.0
+
+- Jobs can now have a name, which can be used as an argument to `get_jobs_by_name`. The name does not have to be unique.
+
 # 0.5.1
 
 - Allow configuring whether to use the `Display` or `Debug` formatter to format failure information.
