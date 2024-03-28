@@ -318,8 +318,14 @@ impl Queue {
                 let schedule: RecurringJobSchedule =
                     serde_json::from_str(&schedule).map_err(|_| Error::InvalidSchedule)?;
 
-                let base_job_info =
-                    Self::run_job_status_query(db, crate::job_status::JobIdQuery::Id(base_job_id))?;
+                let base_job_info = Self::run_job_status_query(
+                    db,
+                    crate::job_status::JobIdQuery::Id(base_job_id),
+                    1,
+                )?
+                .into_iter()
+                .next()
+                .ok_or(Error::NotFound)?;
 
                 let mut find_last_run_stmt = db.prepare_cached(
                     r##"SELECT job_id
@@ -334,10 +340,13 @@ impl Queue {
                     .optional()?;
 
                 let last_run = if let Some(last_run_id) = last_run_id {
-                    Some(Self::run_job_status_query(
+                    Self::run_job_status_query(
                         db,
                         crate::job_status::JobIdQuery::Id(last_run_id),
-                    )?)
+                        1,
+                    )?
+                    .into_iter()
+                    .next()
                 } else {
                     None
                 };
@@ -1230,7 +1239,7 @@ mod tests {
             .get_recurring_job_info("job_id".to_string())
             .await
             .expect("Retrieving job status");
-        let (first_job_id, first_run_at) = job_status.next_run.expect("next_run_at");
+        let (first_job_id, _first_run_at) = job_status.next_run.expect("next_run_at");
         wait_for_job("first run", &test.queue, first_job_id).await;
 
         assert_eq!(

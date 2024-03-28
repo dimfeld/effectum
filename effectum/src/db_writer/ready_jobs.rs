@@ -51,7 +51,8 @@ fn do_get_ready_jobs(
                 backoff_randomization,
                 backoff_initial_interval,
                 max_retries,
-                orig_run_at
+                orig_run_at,
+                jobs.name
             FROM active_jobs
             JOIN jobs USING(job_id)
             WHERE active_worker_id IS NULL
@@ -66,6 +67,7 @@ fn do_get_ready_jobs(
     struct JobResult {
         job_id: i64,
         external_id: Uuid,
+        name: Option<String>,
         priority: i32,
         weight: u16,
         job_type: String,
@@ -103,6 +105,7 @@ fn do_get_ready_jobs(
             let backoff_initial_interval: i32 = row.get(11)?;
             let max_retries: i32 = row.get(12)?;
             let orig_run_at: i64 = row.get(13)?;
+            let name: Option<String> = row.get(14)?;
 
             Ok(JobResult {
                 job_id,
@@ -119,6 +122,7 @@ fn do_get_ready_jobs(
                 backoff_initial_interval,
                 max_retries,
                 orig_run_at,
+                name,
             })
         },
     )?;
@@ -160,6 +164,7 @@ fn do_get_ready_jobs(
         let job = RunningJob(Arc::new(RunningJobData {
             id: job.external_id,
             job_id: job.job_id,
+            name: job.name,
             worker_id,
             heartbeat_increment: job.heartbeat_increment,
             job_type: job.job_type,

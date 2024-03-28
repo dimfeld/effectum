@@ -264,6 +264,52 @@ mod tests {
             wait_for_job("job to run", &test.queue, job_id).await;
         }
     }
+    #[tokio::test]
+    async fn status_by_name() {
+        let test = TestEnvironment::new().await;
+
+        let _worker = test.worker().build().await.expect("failed to build worker");
+
+        let ids = test
+            .queue
+            .add_jobs(vec![
+                JobBuilder::new("counter")
+                    .name("counter1".to_string())
+                    .build(),
+                JobBuilder::new("counter").name("counter2").build(),
+                JobBuilder::new("counter")
+                    .name_opt(Some("counter1"))
+                    .build(),
+            ])
+            .await
+            .expect("failed to add job");
+
+        for job_id in &ids {
+            wait_for_job("job to run", &test.queue, *job_id).await;
+        }
+
+        let jobs = test
+            .queue
+            .get_jobs_by_name("counter1".to_string(), 3)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|j| j.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(jobs, vec![ids[0], ids[2]]);
+
+        let jobs = test
+            .queue
+            .get_jobs_by_name("counter1".to_string(), 1)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|j| j.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(jobs, vec![ids[0]]);
+    }
 
     #[tokio::test]
     async fn worker_gets_pending_jobs_when_starting() {
