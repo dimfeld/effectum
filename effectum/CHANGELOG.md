@@ -1,3 +1,7 @@
+# 0.7.0
+
+- Upgrade to rusqlite 0.31.0 and libsqlite3-sys 0.28
+
 # 0.6.0
 
 - Jobs can now have a name, which can be used as an argument to `get_jobs_by_name`. The name does not have to be unique.
