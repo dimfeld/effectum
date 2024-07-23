@@ -15,7 +15,7 @@ categories = ["asynchronous"]
 effectum = { path = "../effectum" }
 futures = "0.3.30"
 serde = { version = "1.0.197", features = ["derive"] }
-sqlx = { version = "0.7.3", features = ["uuid", "time", "json"] }
+sqlx = { version = "0.8.0", features = ["uuid", "time", "json"] }
 thiserror = "1.0.57"
 time = "0.3.34"
 tokio = { version = "1.36.0", features = ["time", "sync"] }
