@@ -89,7 +89,7 @@ impl Queue {
                 Box::pin(async move {
                     conn.interact(register_functions)
                         .await
-                        .map_err(|e| HookError::Message(e.to_string()))?
+                        .map_err(|e| HookError::Message(e.to_string().into()))?
                         .map_err(|e| HookError::Backend(e))?;
                     Ok(())
                 })
